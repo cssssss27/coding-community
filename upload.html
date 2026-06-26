@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Coding社区 - 提交作品</title>
+  <link rel="stylesheet" href="css/style.css?v=20260624-vibe-derivatives-1">
+</head>
+<body class="auth-state-pending" data-page="upload">
+  <header class="site-header">
+    <nav class="site-nav">
+      <a class="brand" href="index.html"><span class="brand-mark">C.</span><span class="brand-name">Coding社区</span></a>
+      <div class="nav-links">
+        <a href="index.html">首页</a>
+        <a href="community.html">社区</a>
+        <a href="mine.html" data-auth-required>我的</a>
+      </div>
+      <div class="nav-actions">
+        <button class="nav-button" id="open-auth" type="button">登录/注册</button>
+        <a class="nav-button solid" href="community.html">返回社区</a>
+      </div>
+    </nav>
+  </header>
+
+  <main class="upload-page">
+    <section class="upload-hero">
+      <div>
+        <h1>上传作品</h1>
+      </div>
+    </section>
+
+    <section class="upload-review-state hidden" id="upload-review-state" aria-live="polite">
+      <p class="kicker">Reviewing</p>
+      <h2>作品正在审核中</h2>
+      <p id="upload-review-message">管理员审核通过后，作品才会出现在首页和社区作品库。</p>
+      <div class="stack-actions horizontal">
+        <a class="nav-button solid" href="community.html">返回社区</a>
+        <button class="nav-button" type="button" id="upload-another-work">继续上传</button>
+      </div>
+    </section>
+
+    <section class="upload-workspace">
+      <form class="upload-form-panel" id="upload-page-form">
+        <div class="form-section-head full">
+          <p class="kicker">Basic</p>
+          <h2>基础信息</h2>
+        </div>
+
+        <label class="field-group">
+          <span>作品名称</span>
+          <input class="field" name="title" placeholder="例如：清醒市集预约台" required>
+        </label>
+
+        <label class="field-group">
+          <span>作品分类</span>
+          <div class="category-select-stack" id="upload-categories"></div>
+        </label>
+
+        <label class="field-group">
+          <span>作者显示名</span>
+          <input class="field" name="author" placeholder="默认使用当前登录昵称">
+        </label>
+
+        <label class="field-group">
+          <span>出售点数价格</span>
+          <input class="field" name="points" type="number" min="0" step="1" value="18" required>
+        </label>
+
+        <input type="hidden" name="status" value="reviewing">
+
+        <label class="field-group">
+          <span>版本标记</span>
+          <input class="field" name="version" placeholder="v1.0 / beta / 内测版">
+        </label>
+
+        <label class="field-group full">
+          <span>一句话简介</span>
+          <textarea class="field textarea small" name="description" placeholder="说明这个小程序解决什么问题、适合谁使用。" required></textarea>
+        </label>
+
+        <label class="field-group full">
+          <span>标签</span>
+          <input class="field" name="tags" placeholder="用逗号分隔，例如：预约, 运营, HTML">
+        </label>
+
+        <div class="form-section-head full">
+          <p class="kicker">Assets</p>
+          <h2>作品素材</h2>
+        </div>
+
+        <label class="field-group">
+          <span>作品封面图</span>
+          <input class="field" name="cover" type="file" accept="image/*">
+        </label>
+
+        <label class="field-group">
+          <span>HTML 程序文件</span>
+          <input class="field" name="file" type="file" accept=".html,text/html" required>
+        </label>
+
+        <label class="field-group full">
+          <span>功能亮点</span>
+          <textarea class="field textarea" name="highlights" placeholder="每行一条，例如：&#10;包含可交互预约入口&#10;适合直接复刻为同类工具&#10;移动端布局清晰"></textarea>
+        </label>
+
+        <label class="field-group full">
+          <span>适用场景</span>
+          <textarea class="field textarea" name="useCases" placeholder="每行一条，例如：&#10;个人工作流整理&#10;小团队任务管理&#10;活动专题页"></textarea>
+        </label>
+
+        <label class="field-group full">
+          <span>作者说明</span>
+          <textarea class="field textarea small" name="creatorNote" placeholder="可写灵感来源、使用建议、授权说明或后续迭代计划。"></textarea>
+        </label>
+
+        <label class="check-line full">
+          <input type="checkbox" name="rights" required>
+          我确认拥有该 HTML 作品和封面素材的上传与展示权利
+        </label>
+
+        <div class="form-actions full">
+          <button class="nav-button solid" type="submit">立即上传</button>
+          <button class="nav-button" type="reset">清空重填</button>
+        </div>
+      </form>
+
+      <aside class="upload-preview-panel">
+        <p class="kicker">Detail Preview</p>
+        <h2>详情页信息预览</h2>
+        <div class="upload-cover-preview" id="upload-cover-preview">
+          <span>封面预览</span>
+        </div>
+        <dl class="upload-summary" id="upload-summary"></dl>
+        <p class="tiny-note">发布后，作品会进入社区瀑布流；点开后展示封面、简介、作者、发布时间、出售点数价格、分类、标签、功能亮点和适用场景。</p>
+      </aside>
+    </section>
+  </main>
+
+  <script src="js/data/settings.table.js"></script>
+  <script src="js/data/users.table.js"></script>
+  <script src="js/data/works.table.js"></script>
+  <script src="js/data/ads.table.js"></script>
+  <script src="js/data/api-configs.table.js"></script>
+  <script src="js/data/points-records.table.js"></script>
+  <script src="js/app.js?v=20260624-vibe-derivatives-1"></script>
+</body>
+</html>
+

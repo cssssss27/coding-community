@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Coding 社区 - 作品</title>
+  <link rel="stylesheet" href="css/style.css?v=20260624-vibe-derivatives-1">
+</head>
+<body data-page="work">
+  <header class="site-header">
+    <nav class="site-nav">
+      <a class="brand" href="index.html"><span class="brand-mark">C.</span><span class="brand-name">Coding社区</span></a>
+      <div class="nav-links">
+        <a href="index.html">首页</a>
+        <a class="active" href="community.html">社区</a>
+        <a href="mine.html" data-auth-required>我的</a>
+      </div>
+      <div class="nav-actions">
+        <button class="nav-button" id="open-auth" type="button">登录/注册</button>
+        <a class="nav-button solid" href="upload.html" target="_blank" rel="noopener" data-auth-required>提交作品</a>
+      </div>
+    </nav>
+  </header>
+
+  <main>
+    <section class="work-detail">
+      <div class="work-media">
+        <img id="work-image" alt="作品封面" width="282" height="320" loading="eager" fetchpriority="high" decoding="async">
+      </div>
+      <aside class="work-aside">
+        <h1 id="work-title"></h1>
+        <div id="work-info"></div>
+        <div class="stack-actions">
+          <button class="nav-button solid" id="try-work" type="button" data-auth-required data-auth-after-login="">试用程序</button>
+          <a class="nav-button solid" id="vibe-link-side" href="#" data-auth-required>做同款</a>
+        </div>
+      </aside>
+    </section>
+
+    <section class="work-extra" id="work-extra"></section>
+  </main>
+
+  <div class="trial-modal hidden" id="trial-modal" aria-hidden="true">
+    <div class="trial-backdrop" data-close-trial></div>
+    <section class="trial-dialog" role="dialog" aria-modal="true" aria-label="试用程序">
+      <div class="trial-head">
+        <div class="trial-title-block">
+          <h2 id="trial-title">试用程序</h2>
+          <p id="trial-meta" class="trial-meta"></p>
+        </div>
+        <div class="trial-actions">
+          <button class="trial-control" id="trial-fullscreen-toggle" type="button" aria-pressed="false">全屏</button>
+          <button class="trial-control" type="button" data-close-trial>关闭</button>
+        </div>
+      </div>
+      <iframe id="trial-frame" title="程序试用界面"></iframe>
+    </section>
+  </div>
+
+  <script src="js/data/settings.table.js"></script>
+  <script src="js/data/users.table.js"></script>
+  <script src="js/data/works.table.js"></script>
+  <script src="js/data/ads.table.js"></script>
+  <script src="js/data/api-configs.table.js"></script>
+  <script src="js/data/points-records.table.js"></script>
+  <script src="js/app.js?v=20260624-vibe-derivatives-1"></script>
+</body>
+</html>
+

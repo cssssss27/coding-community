@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Coding 社区 - 社区</title>
+  <link rel="stylesheet" href="css/style.css?v=20260624-vibe-derivatives-1">
+</head>
+<body class="auth-state-pending" data-page="community">
+  <header class="site-header">
+    <nav class="site-nav">
+      <a class="brand" href="index.html"><span class="brand-mark">C.</span><span class="brand-name">Coding社区</span></a>
+      <div class="nav-links">
+        <a href="index.html">首页</a>
+        <a class="active" href="community.html">社区</a>
+        <a href="mine.html" data-auth-required>我的</a>
+      </div>
+      <div class="nav-actions">
+        <button class="nav-button" id="open-auth" type="button">登录/注册</button>
+        <a class="nav-button solid" href="upload.html" target="_blank" rel="noopener" data-auth-required>提交作品</a>
+      </div>
+    </nav>
+  </header>
+
+  <main>
+    <section class="filter-panel community-search">
+      <form class="search-form" id="community-search-form">
+        <input class="search-field" id="search-input" placeholder="搜索作品、作者或标签">
+        <button class="search-button" type="submit">搜索</button>
+      </form>
+      <div class="category-tabs" id="category-filter" aria-label="作品分类"></div>
+    </section>
+
+    <section class="masonry-grid" id="community-works"></section>
+  </main>
+
+  <script src="js/data/settings.table.js"></script>
+  <script src="js/data/users.table.js"></script>
+  <script src="js/data/works.table.js"></script>
+  <script src="js/data/ads.table.js"></script>
+  <script src="js/data/api-configs.table.js"></script>
+  <script src="js/data/points-records.table.js"></script>
+  <script src="js/app.js?v=20260624-vibe-derivatives-1"></script>
+</body>
+</html>
+

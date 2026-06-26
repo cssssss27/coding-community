@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Coding 社区 - Management</title>
+  <link rel="stylesheet" href="css/style.css?v=20260624-vibe-derivatives-1">
+</head>
+<body data-page="management">
+  <main class="management-shell">
+    <section class="management-login" id="management-login">
+      <p class="kicker">Management Console</p>
+      <h1>系统后台</h1>
+      <p>用于查看和维护前端网站的用户、作品、点数、统计和 API 配置。默认用户名 admin，密码 123456。</p>
+      <form id="management-login-form" class="login-stack">
+        <input class="field" name="username" placeholder="用户名" autocomplete="username" required>
+        <input class="field" name="password" type="password" placeholder="密码" autocomplete="current-password" required>
+        <button class="nav-button solid full" type="submit">登录控制台</button>
+      </form>
+      <a class="text-link" href="index.html">返回前台首页</a>
+    </section>
+
+    <section class="management-console hidden" id="management-console">
+      <aside class="management-sidebar">
+        <a class="brand management-brand" href="index.html"><span class="brand-mark">C.</span><span class="brand-name">Coding社区</span></a>
+        <div class="management-title">
+          <strong>后台控制台</strong>
+          <span>FastAPI 数据表管理</span>
+        </div>
+        <button class="side-tab active" data-management-tab="overview">总览</button>
+        <button class="side-tab" data-management-tab="users">用户管理</button>
+        <button class="side-tab" data-management-tab="reviews">作品审核</button>
+        <button class="side-tab" data-management-tab="works">作品管理</button>
+        <button class="side-tab" data-management-tab="stats">数据统计</button>
+        <button class="side-tab" data-management-tab="api">API 管理</button>
+        <button class="side-tab" data-management-tab="points">点数流水</button>
+        <button class="side-tab" data-management-tab="settings">站点设置</button>
+        <button class="side-tab" data-management-tab="data">数据工具</button>
+        <button class="side-tab danger" id="management-logout">退出后台</button>
+      </aside>
+      <section class="management-content" id="management-content"></section>
+    </section>
+  </main>
+
+  <script src="js/data/settings.table.js"></script>
+  <script src="js/data/users.table.js"></script>
+  <script src="js/data/works.table.js"></script>
+  <script src="js/data/ads.table.js"></script>
+  <script src="js/data/api-configs.table.js"></script>
+  <script src="js/data/points-records.table.js"></script>
+  <script src="js/app.js?v=20260624-vibe-derivatives-1"></script>
+</body>
+</html>
+

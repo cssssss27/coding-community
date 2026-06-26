@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Coding 社区 - 首页</title>
+  <link rel="stylesheet" href="css/style.css?v=20260624-vibe-derivatives-1">
+</head>
+<body class="auth-state-pending" data-page="home">
+  <header class="site-header">
+    <nav class="site-nav">
+      <a class="brand" href="index.html"><span class="brand-mark">C.</span><span class="brand-name">Coding社区</span></a>
+      <div class="nav-links">
+        <a class="active" href="index.html">首页</a>
+        <a href="community.html">社区</a>
+        <a href="mine.html" data-auth-required>我的</a>
+      </div>
+      <div class="nav-actions">
+        <button class="nav-button" id="open-auth" type="button">登录/注册</button>
+        <a class="nav-button solid" href="upload.html" target="_blank" rel="noopener" data-auth-required>提交作品</a>
+      </div>
+    </nav>
+  </header>
+
+  <main>
+    <section class="home-banner" aria-label="Coding社区展示图">
+      <img src="images/banners/home-ai-banner.webp" alt="AI cube on circuit board" width="1800" height="772" fetchpriority="high" decoding="async">
+    </section>
+
+    <section class="search-panel home-search" aria-label="作品搜索">
+      <form class="search-form" id="home-search-form">
+        <input class="search-field" id="home-search-input" placeholder="搜索作品、作者或标签">
+        <button class="search-button" type="submit">搜索</button>
+      </form>
+    </section>
+
+    <h2 class="featured-title">精选案例</h2>
+
+    <div class="home-featured-window" id="featured-window">
+      <section class="masonry-grid" id="featured-works"></section>
+    </div>
+
+    <div class="more-cases-row">
+      <a class="more-cases-button" href="community.html">更多案例</a>
+    </div>
+
+    <section class="home-footer-block" aria-label="社区动态">
+      <div class="home-footer-main">
+        <p class="kicker">Community Notes</p>
+        <h2>社区动态</h2>
+        <p>精选作品、创作者活动和运营消息会在这里保持更新。</p>
+        <div class="home-footer-stats">
+          <span><strong id="home-work-count">0</strong>作品</span>
+          <span><strong id="home-category-count">0</strong>分类</span>
+          <span><strong id="home-author-count">0</strong>创作者</span>
+        </div>
+      </div>
+      <div class="home-footer-feed" id="home-ads"></div>
+    </section>
+  </main>
+
+  <script src="js/data/settings.table.js"></script>
+  <script src="js/data/users.table.js"></script>
+  <script src="js/data/works.table.js"></script>
+  <script src="js/data/ads.table.js"></script>
+  <script src="js/data/api-configs.table.js"></script>
+  <script src="js/data/points-records.table.js"></script>
+  <script src="js/app.js?v=20260624-vibe-derivatives-1"></script>
+</body>
+</html>
+

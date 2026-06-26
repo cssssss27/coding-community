@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Coding 社区 - Vibe Coding</title>
+  <link rel="stylesheet" href="css/style.css?v=20260624-vibe-derivatives-1">
+</head>
+<body data-page="vibe">
+  <header class="site-header">
+    <nav class="site-nav">
+      <a class="brand" href="index.html"><span class="brand-mark">C.</span><span class="brand-name">Coding社区</span></a>
+      <div class="nav-links">
+        <a href="index.html">首页</a>
+        <a class="active" href="community.html">社区</a>
+        <a href="mine.html" data-auth-required>我的</a>
+      </div>
+      <div class="nav-actions">
+        <button class="nav-button solid" id="save-variant">保存为新作品</button>
+      </div>
+    </nav>
+  </header>
+
+  <main>
+    <section class="page-title">
+      <p class="kicker">Vibe Coding</p>
+      <h1 id="vibe-title">做同款工作台</h1>
+    </section>
+    <section class="vibe-studio" aria-label="做同款工作台">
+      <aside class="vibe-chat-panel">
+        <div class="vibe-chat-head">
+          <div>
+            <p class="kicker">Prompt</p>
+            <h2 id="vibe-chat-title">修改指令</h2>
+          </div>
+          <span id="vibe-status">载入中</span>
+        </div>
+        <div class="vibe-chat" id="vibe-chat" aria-live="polite"></div>
+        <form class="vibe-compose" id="vibe-form">
+          <textarea class="field textarea prompt" id="vibe-prompt" placeholder="例如：改成适合教育社群的黑白高级风格，增加报名按钮和三张数据卡。"></textarea>
+          <button class="nav-button solid" id="run-vibe" type="submit">发送修改</button>
+        </form>
+      </aside>
+      <section class="vibe-preview-panel">
+        <div class="vibe-preview-head">
+          <div>
+            <p class="kicker">Preview</p>
+            <h2>实时预览</h2>
+          </div>
+          <button class="nav-button" id="refresh-preview" type="button">刷新预览</button>
+        </div>
+        <iframe class="studio-preview" id="vibe-preview" title="vibe coding 预览" sandbox="allow-scripts allow-forms allow-pointer-lock allow-modals"></iframe>
+      </section>
+    </section>
+  </main>
+
+  <script src="js/data/settings.table.js"></script>
+  <script src="js/data/users.table.js"></script>
+  <script src="js/data/works.table.js"></script>
+  <script src="js/data/ads.table.js"></script>
+  <script src="js/data/api-configs.table.js"></script>
+  <script src="js/data/points-records.table.js"></script>
+  <script src="js/app.js?v=20260624-vibe-derivatives-1"></script>
+</body>
+</html>
+
