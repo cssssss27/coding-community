@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -29,6 +29,7 @@ COVER_DIR = UPLOAD_DIR / "covers"
 HTML_DIR = UPLOAD_DIR / "html"
 USER_UPLOAD_DIR = UPLOAD_DIR / "users"
 VIBE_SESSIONS: dict[str, dict[str, Any]] = {}
+ENGAGEMENT_KINDS = {"like", "favorite"}
 
 DEFAULT_WORK_CATEGORIES = [
   "创意组件",
@@ -44,6 +45,12 @@ DEFAULT_WORK_CATEGORIES = [
   "生活工具",
   "艺术展览",
 ]
+
+DEFAULT_ADMIN_AUTH = {"username": "admin", "password": "admin1212"}
+OLD_DEFAULT_ADMIN_AUTHS = (
+  {"username": "admin", "password": "admin"},
+  {"username": "admin", "password": "123456"},
+)
 
 LEGACY_CATEGORY_SLOTS = {
   "互动视觉": 0,
@@ -171,6 +178,92 @@ def verify_password(password: str, stored: str) -> bool:
   return secrets.compare_digest(check, digest)
 
 
+def row_value(row: Any, key: str, fallback: Any = None) -> Any:
+  if isinstance(row, dict):
+    return row.get(key, fallback)
+  return row[key] if key in row.keys() else fallback
+
+
+def refresh_work_lineage(conn: sqlite3.Connection) -> None:
+  rows = conn.execute("select * from works order by coalesce(created_at, ''), id").fetchall()
+  by_id = {row["id"]: row for row in rows}
+  cache: dict[str, dict[str, Any]] = {}
+
+  def lineage_for(row: sqlite3.Row, stack: set[str] | None = None) -> dict[str, Any]:
+    work_id = row["id"]
+    if work_id in cache:
+      return cache[work_id]
+    stack = set(stack or set())
+    if work_id in stack:
+      result = {
+        "originalWorkId": "",
+        "originalWorkTitle": "",
+        "parentWorkId": "",
+        "parentWorkTitle": "",
+        "generation": 0,
+      }
+      cache[work_id] = result
+      return result
+    stack.add(work_id)
+    parent_id = (row_value(row, "parent_work_id", "") or row_value(row, "origin_work_id", "") or "").strip()
+    parent_title = (row_value(row, "parent_work_title", "") or row_value(row, "origin_work_title", "") or "").strip()
+    if not parent_id:
+      result = {
+        "originalWorkId": "",
+        "originalWorkTitle": "",
+        "parentWorkId": "",
+        "parentWorkTitle": "",
+        "generation": 0,
+      }
+      cache[work_id] = result
+      return result
+    parent = by_id.get(parent_id)
+    if not parent:
+      result = {
+        "originalWorkId": row_value(row, "original_work_id", "") or parent_id,
+        "originalWorkTitle": row_value(row, "original_work_title", "") or parent_title,
+        "parentWorkId": parent_id,
+        "parentWorkTitle": parent_title,
+        "generation": max(1, int(row_value(row, "derivative_generation", 0) or 0)),
+      }
+      cache[work_id] = result
+      return result
+    parent_lineage = lineage_for(parent, stack)
+    parent_generation = int(parent_lineage.get("generation") or 0)
+    original_id = parent_lineage.get("originalWorkId") or parent["id"]
+    original_title = parent_lineage.get("originalWorkTitle") or parent["title"]
+    result = {
+      "originalWorkId": original_id,
+      "originalWorkTitle": original_title,
+      "parentWorkId": parent["id"],
+      "parentWorkTitle": parent["title"],
+      "generation": parent_generation + 1,
+    }
+    cache[work_id] = result
+    return result
+
+  for row in rows:
+    lineage = lineage_for(row)
+    conn.execute(
+      """
+      update works
+      set parent_work_id = ?, parent_work_title = ?, original_work_id = ?, original_work_title = ?,
+          origin_work_id = ?, origin_work_title = ?, derivative_generation = ?
+      where id = ?
+      """,
+      (
+        lineage["parentWorkId"],
+        lineage["parentWorkTitle"],
+        lineage["originalWorkId"],
+        lineage["originalWorkTitle"],
+        lineage["originalWorkId"],
+        lineage["originalWorkTitle"],
+        lineage["generation"],
+        row["id"],
+      ),
+    )
+
+
 def sqlite_legacy_init_db() -> None:
   with db() as conn:
     conn.executescript(
@@ -237,6 +330,10 @@ def sqlite_legacy_init_db() -> None:
         author text,
         author_id text,
         points integer default 0,
+        paid_trial integer default 0,
+        view_count integer default 0,
+        trial_count integer default 0,
+        vibe_count integer default 0,
         featured integer default 0,
         status text default 'published',
         image_url text,
@@ -252,6 +349,11 @@ def sqlite_legacy_init_db() -> None:
         source_type text default 'user-upload',
         origin_work_id text,
         origin_work_title text,
+        original_work_id text,
+        original_work_title text,
+        parent_work_id text,
+        parent_work_title text,
+        derivative_generation integer default 0,
         created_at text,
         updated_at text,
         sales_count integer default 0,
@@ -266,6 +368,16 @@ def sqlite_legacy_init_db() -> None:
         kind text,
         note text,
         created_at text
+      );
+
+      create table if not exists work_engagements (
+        user_id text not null,
+        work_id text not null,
+        kind text not null,
+        created_at text,
+        primary key(user_id, work_id, kind),
+        foreign key(user_id) references users(id),
+        foreign key(work_id) references works(id)
       );
 
       create table if not exists settings (
@@ -294,19 +406,38 @@ def sqlite_legacy_init_db() -> None:
       conn.execute("alter table works add column origin_work_id text")
     if "origin_work_title" not in work_columns:
       conn.execute("alter table works add column origin_work_title text")
+    if "original_work_id" not in work_columns:
+      conn.execute("alter table works add column original_work_id text")
+    if "original_work_title" not in work_columns:
+      conn.execute("alter table works add column original_work_title text")
+    if "parent_work_id" not in work_columns:
+      conn.execute("alter table works add column parent_work_id text")
+    if "parent_work_title" not in work_columns:
+      conn.execute("alter table works add column parent_work_title text")
+    if "derivative_generation" not in work_columns:
+      conn.execute("alter table works add column derivative_generation integer default 0")
+    if "paid_trial" not in work_columns:
+      conn.execute("alter table works add column paid_trial integer default 0")
+    if "view_count" not in work_columns:
+      conn.execute("alter table works add column view_count integer default 0")
+    if "trial_count" not in work_columns:
+      conn.execute("alter table works add column trial_count integer default 0")
+    if "vibe_count" not in work_columns:
+      conn.execute("alter table works add column vibe_count integer default 0")
+    refresh_work_lineage(conn)
     conn.execute(
       """
       insert or ignore into settings(id, value_json)
       values('adminAuth', ?)
       """,
-      (json_dumps({"username": "admin", "password": "123456"}),),
+      (json_dumps(DEFAULT_ADMIN_AUTH),),
     )
     auth_row = conn.execute("select value_json from settings where id = 'adminAuth'").fetchone()
     auth_value = json_loads(auth_row["value_json"], {}) if auth_row else {}
-    if auth_value.get("username") == "admin" and auth_value.get("password") == "admin":
+    if auth_value in OLD_DEFAULT_ADMIN_AUTHS:
       conn.execute(
         "update settings set value_json = ? where id = 'adminAuth'",
-        (json_dumps({"username": "admin", "password": "123456"}),),
+        (json_dumps(DEFAULT_ADMIN_AUTH),),
       )
     conn.execute(
       """
@@ -394,6 +525,10 @@ def mysql_schema_sql() -> str:
     author varchar(255),
     author_id varchar(80),
     points int default 0,
+    paid_trial tinyint default 0,
+    view_count int default 0,
+    trial_count int default 0,
+    vibe_count int default 0,
     featured tinyint default 0,
     status varchar(40) default 'published',
     image_url text,
@@ -409,13 +544,20 @@ def mysql_schema_sql() -> str:
     source_type varchar(80) default 'user-upload',
     origin_work_id varchar(120),
     origin_work_title varchar(255),
+    original_work_id varchar(120),
+    original_work_title varchar(255),
+    parent_work_id varchar(120),
+    parent_work_title varchar(255),
+    derivative_generation int default 0,
     created_at varchar(40),
     updated_at varchar(40),
     sales_count int default 0,
     revenue_points int default 0,
     index idx_works_status(status),
     index idx_works_created_at(created_at),
-    index idx_works_author_id(author_id)
+    index idx_works_author_id(author_id),
+    index idx_works_parent_work_id(parent_work_id),
+    index idx_works_original_work_id(original_work_id)
   ) engine=InnoDB default charset=utf8mb4;
 
   create table if not exists points_records (
@@ -426,6 +568,16 @@ def mysql_schema_sql() -> str:
     note text,
     created_at varchar(40),
     index idx_points_records_user_id(user_id)
+  ) engine=InnoDB default charset=utf8mb4;
+
+  create table if not exists work_engagements (
+    user_id varchar(80) not null,
+    work_id varchar(120) not null,
+    kind varchar(40) not null,
+    created_at varchar(40),
+    primary key(user_id, work_id, kind),
+    index idx_work_engagements_work_id(work_id),
+    index idx_work_engagements_user_id(user_id)
   ) engine=InnoDB default charset=utf8mb4;
 
   create table if not exists settings (
@@ -446,27 +598,56 @@ def mysql_schema_sql() -> str:
   """
 
 
+def work_column_names(conn: Any) -> set[str]:
+  if database_engine() == "mysql":
+    return {row["Field"] for row in conn.execute("show columns from works").fetchall()}
+  return {row["name"] for row in conn.execute("pragma table_info(works)").fetchall()}
+
+
+def ensure_work_schema_columns(conn: Any) -> None:
+  column_types = [
+    ("html_content", "text", "mediumtext"),
+    ("categories_json", "text default '[]'", "text"),
+    ("origin_work_id", "text", "varchar(120)"),
+    ("origin_work_title", "text", "varchar(255)"),
+    ("original_work_id", "text", "varchar(120)"),
+    ("original_work_title", "text", "varchar(255)"),
+    ("parent_work_id", "text", "varchar(120)"),
+    ("parent_work_title", "text", "varchar(255)"),
+    ("derivative_generation", "integer default 0", "int default 0"),
+    ("paid_trial", "integer default 0", "tinyint default 0"),
+    ("view_count", "integer default 0", "int default 0"),
+    ("trial_count", "integer default 0", "int default 0"),
+    ("vibe_count", "integer default 0", "int default 0"),
+  ]
+  existing = work_column_names(conn)
+  use_mysql = database_engine() == "mysql"
+  for name, sqlite_type, mysql_type in column_types:
+    if name not in existing:
+      conn.execute(f"alter table works add column {name} {mysql_type if use_mysql else sqlite_type}")
+
+
 def seed_default_rows(conn: Any) -> None:
   conn.execute(
     """
     insert or ignore into settings(id, value_json)
     values('adminAuth', ?)
     """,
-    (json_dumps({"username": "admin", "password": "123456"}),),
+    (json_dumps(DEFAULT_ADMIN_AUTH),),
   )
   auth_row = conn.execute("select value_json from settings where id = 'adminAuth'").fetchone()
   auth_value = json_loads(auth_row["value_json"], {}) if auth_row else {}
-  if auth_value.get("username") == "admin" and auth_value.get("password") == "admin":
+  if auth_value in OLD_DEFAULT_ADMIN_AUTHS:
     conn.execute(
       "update settings set value_json = ? where id = 'adminAuth'",
-      (json_dumps({"username": "admin", "password": "123456"}),),
+      (json_dumps(DEFAULT_ADMIN_AUTH),),
     )
   conn.execute(
     """
     insert or ignore into settings(id, value_json)
     values('site', ?)
     """,
-    (json_dumps({"siteName": "Coding社区", "announcement": "", "tagline": ""}),),
+    (json_dumps({"siteName": "Coding绀惧尯", "announcement": "", "tagline": ""}),),
   )
   conn.execute(
     """
@@ -514,6 +695,8 @@ def init_db() -> None:
     return
   with db() as conn:
     conn.executescript(mysql_schema_sql())
+    ensure_work_schema_columns(conn)
+    refresh_work_lineage(conn)
     seed_default_rows(conn)
     seed_deepseek_from_env(conn)
 
@@ -587,18 +770,62 @@ def read_work_html(path_value: str | None) -> str:
 
 
 def calculate_work_heat(row: sqlite3.Row) -> int:
-  seed_source = str(row["id"] or row["title"] or "")
-  seed = sum(ord(char) for char in seed_source) % 31
-  return max(
-    1,
-    round(
-      (row["sales_count"] or 0) * 90
-      + (row["revenue_points"] or 0) * 0.8
-      + (row["points"] or 0) * 1.2
-      + (26 if row["featured"] else 0)
-      + seed
-    ),
-  )
+  views = int(row_value(row, "view_count", 0) or 0)
+  likes = int(row_value(row, "like_count", 0) or 0)
+  favorites = int(row_value(row, "favorite_count", 0) or 0)
+  trials = int(row_value(row, "trial_count", 0) or 0)
+  vibes = int(row_value(row, "vibe_count", 0) or 0)
+  return max(0, round(views * 0.10 + likes * 0.30 + favorites * 0.15 + trials * 0.15 + vibes * 0.30))
+
+
+WORK_SELECT_COLUMNS = """
+  w.*,
+  (select count(*) from work_engagements e where e.work_id = w.id and e.kind = 'like') as like_count,
+  (select count(*) from work_engagements e where e.work_id = w.id and e.kind = 'favorite') as favorite_count,
+  (
+    select count(*)
+    from works c
+    where c.status = 'published'
+      and (
+        c.parent_work_id = w.id
+        or (coalesce(c.parent_work_id, '') = '' and c.origin_work_id = w.id)
+        or c.original_work_id = w.id
+      )
+  ) as remix_count
+"""
+
+
+def work_rows(
+  conn: sqlite3.Connection,
+  where_clause: str = "",
+  params: tuple[Any, ...] = (),
+  order_by: str = "w.created_at desc",
+) -> list[sqlite3.Row]:
+  where_sql = f" where {where_clause}" if where_clause else ""
+  order_sql = f" order by {order_by}" if order_by else ""
+  return conn.execute(f"select {WORK_SELECT_COLUMNS} from works w{where_sql}{order_sql}", params).fetchall()
+
+
+def work_row(conn: sqlite3.Connection, work_id: str) -> sqlite3.Row | None:
+  rows = work_rows(conn, "w.id = ?", (work_id,), "")
+  return rows[0] if rows else None
+
+
+def user_work_engagements(conn: sqlite3.Connection, user_id: str) -> list[dict[str, str]]:
+  rows = conn.execute(
+    "select work_id, kind from work_engagements where user_id = ? order by created_at desc",
+    (user_id,),
+  ).fetchall()
+  return [{"workId": row["work_id"], "kind": row["kind"]} for row in rows]
+
+
+def user_work_engagement_state(conn: sqlite3.Connection, user_id: str, work_id: str) -> dict[str, bool]:
+  rows = conn.execute(
+    "select kind from work_engagements where user_id = ? and work_id = ?",
+    (user_id, work_id),
+  ).fetchall()
+  kinds = {row["kind"] for row in rows}
+  return {"liked": "like" in kinds, "favorited": "favorite" in kinds}
 
 
 def public_work(row: sqlite3.Row, include_html: bool = True) -> dict[str, Any]:
@@ -607,6 +834,12 @@ def public_work(row: sqlite3.Row, include_html: bool = True) -> dict[str, Any]:
   if "categories_json" in row.keys():
     stored_categories = json_loads(row["categories_json"], [])
   categories = normalize_work_categories(stored_categories or [row["category"]], active_categories)
+  generation = int(row_value(row, "derivative_generation", 0) or 0)
+  original_work_id = (row_value(row, "original_work_id", "") or row_value(row, "origin_work_id", "") or "").strip()
+  original_work_title = (row_value(row, "original_work_title", "") or row_value(row, "origin_work_title", "") or "").strip()
+  parent_work_id = (row_value(row, "parent_work_id", "") or row_value(row, "origin_work_id", "") or "").strip()
+  parent_work_title = (row_value(row, "parent_work_title", "") or row_value(row, "origin_work_title", "") or "").strip()
+  lineage_label = f"《{original_work_title}》的第{generation}代衍生" if generation > 0 and original_work_title else ""
   work = {
     "id": row["id"],
     "title": row["title"],
@@ -615,6 +848,7 @@ def public_work(row: sqlite3.Row, include_html: bool = True) -> dict[str, Any]:
     "author": row["author"] or "匿名创作者",
     "authorId": row["author_id"] or "",
     "points": row["points"] or 0,
+    "paidTrial": bool(row_value(row, "paid_trial", 0) or 0),
     "featured": bool(row["featured"]),
     "status": row["status"] or "published",
     "image": row["image_url"] or "images/works/tiny-crm.png",
@@ -625,12 +859,24 @@ def public_work(row: sqlite3.Row, include_html: bool = True) -> dict[str, Any]:
     "creatorNote": row["creator_note"] or "",
     "version": row["version"] or "",
     "sourceType": row["source_type"] or "user-upload",
-    "originWorkId": (row["origin_work_id"] if "origin_work_id" in row.keys() else "") or "",
-    "originWorkTitle": (row["origin_work_title"] if "origin_work_title" in row.keys() else "") or "",
+    "originWorkId": original_work_id,
+    "originWorkTitle": original_work_title,
+    "originalWorkId": original_work_id,
+    "originalWorkTitle": original_work_title,
+    "parentWorkId": parent_work_id,
+    "parentWorkTitle": parent_work_title,
+    "derivativeGeneration": generation,
+    "lineageLabel": lineage_label,
     "createdAt": (row["created_at"] or "")[:10],
     "updatedAt": row["updated_at"] or "",
     "salesCount": row["sales_count"] or 0,
     "revenuePoints": row["revenue_points"] or 0,
+    "viewCount": int(row_value(row, "view_count", 0) or 0),
+    "trialCount": int(row_value(row, "trial_count", 0) or 0),
+    "vibeCount": int(row_value(row, "vibe_count", 0) or 0),
+    "likeCount": int(row_value(row, "like_count", 0) or 0),
+    "favoriteCount": int(row_value(row, "favorite_count", 0) or 0),
+    "remixCount": int(row_value(row, "remix_count", 0) or 0),
     "heat": calculate_work_heat(row),
   }
   if include_html:
@@ -896,7 +1142,53 @@ def write_upload_to_path(upload: UploadFile, path: Path) -> str:
   path.parent.mkdir(parents=True, exist_ok=True)
   with path.open("wb") as handle:
     handle.write(upload.file.read())
+  upload.file.close()
   return str(path.relative_to(ROOT)).replace("\\", "/")
+
+
+def parsed_tags(value: Any) -> list[str]:
+  return [item.strip() for item in str(value or "").replace("，", ",").split(",") if item.strip()][:8]
+
+
+def parsed_lines(value: Any) -> list[str]:
+  return [item.strip() for item in str(value or "").splitlines() if item.strip()][:8]
+
+
+def truthy_form_value(value: Any) -> bool:
+  return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on", "是", "paid", "paidTrial"}
+
+
+def require_work_submission_fields(
+  *,
+  title: str,
+  categories: Any,
+  author: str,
+  description: str,
+  tags: str,
+  cover: Optional[UploadFile],
+  html_file: Optional[UploadFile] = None,
+  require_html_file: bool = False,
+) -> tuple[str, list[str], str, int, str, list[str], UploadFile]:
+  clean_title = title.strip()
+  if not clean_title:
+    raise HTTPException(status_code=400, detail="请填写作品名称")
+  selected_categories = category_values(categories)
+  if not selected_categories:
+    raise HTTPException(status_code=400, detail="请选择 1-3 个作品分类")
+  author_name = author.strip()
+  if not author_name:
+    raise HTTPException(status_code=400, detail="请填写作者显示名")
+  clean_description = description.strip()
+  if not clean_description:
+    raise HTTPException(status_code=400, detail="请填写一句话简介")
+  tag_values = parsed_tags(tags)
+  if not tag_values:
+    raise HTTPException(status_code=400, detail="请填写标签")
+  if not cover or not cover.filename:
+    raise HTTPException(status_code=400, detail="请选择作品封面图")
+  if require_html_file and (not html_file or not html_file.filename):
+    raise HTTPException(status_code=400, detail="请选择 HTML 程序文件")
+  return clean_title, selected_categories, author_name, clean_description, tag_values, cover
 
 
 def user_work_folder(user: dict[str, Any], title: str, work_id: str) -> Path:
@@ -1013,6 +1305,15 @@ class VibeSavePayload(BaseModel):
   title: str = ""
 
 
+class WorkEngagementPayload(BaseModel):
+  kind: str
+  active: bool = True
+
+
+class WorkEventPayload(BaseModel):
+  kind: str
+
+
 class AdminPointPayload(BaseModel):
   userId: str
   type: str = "adjust"
@@ -1025,7 +1326,7 @@ class AdminSettingsPayload(BaseModel):
   announcement: str = ""
   tagline: str = ""
   username: str = "admin"
-  password: str = "123456"
+  password: str = "admin1212"
   categories: list[str] = []
 
 
@@ -1054,7 +1355,7 @@ def bootstrap(user: Optional[dict[str, Any]] = Depends(current_user_optional)) -
   with db() as conn:
     categories = active_work_categories(conn)
     users = [user_with_profile(conn, row) for row in conn.execute("select * from users order by created_at desc").fetchall()]
-    works = public_works(conn.execute("select * from works order by created_at desc").fetchall(), categories, include_html=False)
+    works = public_works(work_rows(conn), categories, include_html=False)
     return {
       "serverMode": True,
       "currentUser": user,
@@ -1062,6 +1363,7 @@ def bootstrap(user: Optional[dict[str, Any]] = Depends(current_user_optional)) -
       "settings": settings_rows(conn),
       "users": users,
       "works": works,
+      "workEngagements": user_work_engagements(conn, user["id"]) if user else [],
       "ads": [],
       "apiConfigs": api_config_rows(conn),
       "pointsRecords": points_rows(conn),
@@ -1087,7 +1389,7 @@ def login(payload: LoginPayload) -> dict[str, Any]:
     conn.execute("update users set last_login_at = ?, last_active_at = ?, activity_score = min(activity_score + 3, 100) where id = ?", (stamp, stamp, row["id"]))
     token = create_session(conn, row["id"])
     fresh = conn.execute("select * from users where id = ?", (row["id"],)).fetchone()
-    return {"token": token, "user": user_with_profile(conn, fresh)}
+    return {"token": token, "user": user_with_profile(conn, fresh), "workEngagements": user_work_engagements(conn, row["id"])}
 
 
 @app.post("/api/auth/register")
@@ -1149,7 +1451,7 @@ def register(payload: RegisterPayload) -> dict[str, Any]:
     )
     token = create_session(conn, user_id)
     row = conn.execute("select * from users where id = ?", (user_id,)).fetchone()
-    return {"token": token, "user": user_with_profile(conn, row)}
+    return {"token": token, "user": user_with_profile(conn, row), "workEngagements": []}
 
 
 @app.post("/api/auth/provider-login")
@@ -1200,7 +1502,7 @@ def provider_login(payload: ProviderPayload) -> dict[str, Any]:
         ),
       )
     token = create_session(conn, row["id"])
-    return {"token": token, "user": user_with_profile(conn, row)}
+    return {"token": token, "user": user_with_profile(conn, row), "workEngagements": user_work_engagements(conn, row["id"])}
 
 
 @app.get("/api/me")
@@ -1295,7 +1597,7 @@ def update_profile(payload: ProfilePayload, user: dict[str, Any] = Depends(curre
 def list_works() -> dict[str, Any]:
   with db() as conn:
     categories = active_work_categories(conn)
-    rows = conn.execute("select * from works order by created_at desc").fetchall()
+    rows = work_rows(conn)
     return {"works": public_works(rows, categories, include_html=False)}
 
 
@@ -1303,9 +1605,65 @@ def list_works() -> dict[str, Any]:
 def get_work(work_id: str) -> dict[str, Any]:
   with db() as conn:
     categories = active_work_categories(conn)
-    row = conn.execute("select * from works where id = ?", (work_id,)).fetchone()
+    row = work_row(conn, work_id)
     if not row:
       raise HTTPException(status_code=404, detail="作品不存在")
+    return {"work": public_works([row], categories, include_html=False)[0]}
+
+
+@app.post("/api/works/{work_id}/engagements")
+def set_work_engagement(
+  work_id: str,
+  payload: WorkEngagementPayload,
+  user: dict[str, Any] = Depends(current_user),
+) -> dict[str, Any]:
+  kind = payload.kind.strip().lower()
+  if kind not in ENGAGEMENT_KINDS:
+    raise HTTPException(status_code=400, detail="互动类型不正确")
+  with db() as conn:
+    exists = conn.execute("select id from works where id = ?", (work_id,)).fetchone()
+    if not exists:
+      raise HTTPException(status_code=404, detail="作品不存在")
+    if payload.active:
+      conn.execute(
+        """
+        insert or ignore into work_engagements(user_id, work_id, kind, created_at)
+        values(?, ?, ?, ?)
+        """,
+        (user["id"], work_id, kind, now_text()),
+      )
+    else:
+      conn.execute(
+        "delete from work_engagements where user_id = ? and work_id = ? and kind = ?",
+        (user["id"], work_id, kind),
+      )
+    categories = active_work_categories(conn)
+    row = work_row(conn, work_id)
+    return {
+      "work": public_works([row], categories, include_html=False)[0],
+      "engagement": user_work_engagement_state(conn, user["id"], work_id),
+      "workEngagements": user_work_engagements(conn, user["id"]),
+    }
+
+
+@app.post("/api/works/{work_id}/events")
+def record_work_event(work_id: str, payload: WorkEventPayload) -> dict[str, Any]:
+  kind = payload.kind.strip().lower()
+  metric_columns = {
+    "view": "view_count",
+    "trial": "trial_count",
+    "vibe": "vibe_count",
+  }
+  column = metric_columns.get(kind)
+  if not column:
+    raise HTTPException(status_code=400, detail="事件类型不正确")
+  with db() as conn:
+    exists = conn.execute("select id from works where id = ?", (work_id,)).fetchone()
+    if not exists:
+      raise HTTPException(status_code=404, detail="作品不存在")
+    conn.execute(f"update works set {column} = coalesce({column}, 0) + 1, updated_at = ? where id = ?", (now_text(), work_id))
+    categories = active_work_categories(conn)
+    row = work_row(conn, work_id)
     return {"work": public_works([row], categories, include_html=False)[0]}
 
 
@@ -1335,12 +1693,14 @@ def preview_work(work_id: str):
 def create_vibe_session(payload: VibeSessionPayload, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
   with db() as conn:
     categories = active_work_categories(conn)
-    row = conn.execute("select * from works where id = ?", (payload.workId.strip(),)).fetchone()
+    row = work_row(conn, payload.workId.strip())
     if not row:
       raise HTTPException(status_code=404, detail="作品不存在")
     html = row["html_content"] or read_work_html(row["html_path"])
     if not html:
       raise HTTPException(status_code=404, detail="作品源码不存在")
+    conn.execute("update works set vibe_count = coalesce(vibe_count, 0) + 1, updated_at = ? where id = ?", (now_text(), payload.workId.strip()))
+    row = work_row(conn, payload.workId.strip())
     work = public_works([row], categories, include_html=False)[0]
   session_id = secrets.token_urlsafe(18)
   session = {
@@ -1394,55 +1754,118 @@ def create_vibe_message(
   return {"message": assistant_message, "session": public_vibe_session(session)}
 
 
+async def parse_vibe_save_request(request: Request) -> tuple[dict[str, Any], Optional[UploadFile]]:
+  content_type = request.headers.get("content-type", "")
+  if "multipart/form-data" in content_type or "application/x-www-form-urlencoded" in content_type:
+    form = await request.form()
+    data = {
+      "title": str(form.get("title") or ""),
+      "categories": [str(item) for item in form.getlist("categories") if str(item).strip()],
+      "author": str(form.get("author") or ""),
+      "paidTrial": str(form.get("paidTrial") or "false"),
+      "description": str(form.get("description") or ""),
+      "tags": str(form.get("tags") or ""),
+      "highlights": str(form.get("highlights") or ""),
+      "useCases": str(form.get("useCases") or ""),
+      "creatorNote": str(form.get("creatorNote") or ""),
+      "version": str(form.get("version") or ""),
+    }
+    cover = form.get("cover")
+    return data, cover if hasattr(cover, "filename") and hasattr(cover, "file") else None
+  try:
+    body = await request.json()
+  except Exception:
+    body = {}
+  data = body if isinstance(body, dict) else {}
+  return {
+    "title": str(data.get("title") or ""),
+    "categories": data.get("categories") or [],
+    "author": str(data.get("author") or ""),
+    "paidTrial": data.get("paidTrial", False),
+    "description": str(data.get("description") or ""),
+    "tags": str(data.get("tags") or ""),
+    "highlights": str(data.get("highlights") or ""),
+    "useCases": str(data.get("useCases") or ""),
+    "creatorNote": str(data.get("creatorNote") or ""),
+    "version": str(data.get("version") or ""),
+  }, None
+
+
 @app.post("/api/vibe/sessions/{session_id}/save")
-def save_vibe_variant(
+async def save_vibe_variant(
   session_id: str,
-  payload: VibeSavePayload,
+  request: Request,
   user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
   session = require_vibe_session(session_id, user)
   work = session["work"]
   work_id = f"work-{secrets.token_hex(8)}"
-  title = payload.title.strip() or f"{work['title']} 的同款改版"
+  payload, cover = await parse_vibe_save_request(request)
+  if not str(payload.get("title") or "").strip():
+    raise HTTPException(status_code=400, detail="请输入新作品名称")
+  with db() as conn:
+    active_categories = active_work_categories(conn)
+  title, requested_categories, author_name, description, tag_values, cover_file = require_work_submission_fields(
+    title=str(payload.get("title") or ""),
+    categories=payload.get("categories") or [],
+    author=str(payload.get("author") or ""),
+    description=str(payload.get("description") or ""),
+    tags=str(payload.get("tags") or ""),
+    cover=cover,
+  )
+  paid_trial = truthy_form_value(payload.get("paidTrial"))
+  categories = canonical_work_categories(requested_categories, active_categories)
+  parent_generation = int(work.get("derivativeGeneration") or 0)
+  derivative_generation = parent_generation + 1
+  original_work_id = work.get("originalWorkId") or work.get("originWorkId") or work["id"]
+  original_work_title = work.get("originalWorkTitle") or work.get("originWorkTitle") or work["title"]
+  parent_work_id = work["id"]
+  parent_work_title = work["title"]
   folder = user_work_folder(user, title, work_id)
   html_path_obj = folder / "index.html"
   html_path_obj.write_text(session["currentHtml"], encoding="utf-8")
   html_path = str(html_path_obj.relative_to(ROOT)).replace("\\", "/")
+  cover_suffix = Path(cover_file.filename or "").suffix.lower() or ".png"
+  image_url = write_upload_to_path(cover_file, folder / f"cover{cover_suffix}")
   with db() as conn:
-    active_categories = active_work_categories(conn)
-    categories = normalize_work_categories(work.get("categories") or [work.get("category")], active_categories)
     conn.execute(
       """
       insert into works(
-        id, title, category, author, author_id, points, featured, status, image_url, html_path,
+        id, title, category, author, author_id, points, paid_trial, featured, status, image_url, html_path,
         html_content, description, categories_json, tags_json, highlights_json, use_cases_json,
-        creator_note, version, source_type, origin_work_id, origin_work_title, created_at, updated_at, sales_count, revenue_points
+        creator_note, version, source_type, origin_work_id, origin_work_title, original_work_id, original_work_title,
+        parent_work_id, parent_work_title, derivative_generation, created_at, updated_at, sales_count, revenue_points
       )
-      values(?, ?, ?, ?, ?, ?, 0, 'published', ?, ?, '', ?, ?, ?, ?, ?, ?, ?, 'vibe-remix', ?, ?, ?, ?, 0, 0)
+      values(?, ?, ?, ?, ?, 0, ?, 0, 'published', ?, ?, '', ?, ?, ?, ?, ?, ?, ?, 'vibe-remix', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
       """,
       (
         work_id,
         title,
         categories[0],
-        user.get("name") or work.get("author") or "当前用户",
+        author_name,
         user["id"],
-        int(work.get("points") or 0),
-        work.get("image") or "images/works/tiny-crm.png",
+        1 if paid_trial else 0,
+        image_url,
         html_path,
-        f"基于「{work['title']}」通过做同款生成的新版本。",
+        description,
         json_dumps(canonical_work_categories(categories, active_categories)),
-        json_dumps([*dict.fromkeys([*(work.get("tags") or []), "同款"])]),
-        json_dumps(work.get("highlights") or []),
-        json_dumps(work.get("useCases") or []),
-        f"由 {user.get('name') or '用户'} 基于「{work['title']}」二次开发。",
-        "vibe remix",
-        work["id"],
-        work["title"],
+        json_dumps(tag_values),
+        json_dumps(parsed_lines(payload.get("highlights"))),
+        json_dumps(parsed_lines(payload.get("useCases"))),
+        str(payload.get("creatorNote") or "").strip(),
+        str(payload.get("version") or "").strip(),
+        original_work_id,
+        original_work_title,
+        original_work_id,
+        original_work_title,
+        parent_work_id,
+        parent_work_title,
+        derivative_generation,
         now_text(),
         now_text(),
       ),
     )
-    row = conn.execute("select * from works where id = ?", (work_id,)).fetchone()
+    row = work_row(conn, work_id)
     return {"work": public_works([row], active_categories, include_html=False)[0]}
 
 
@@ -1452,7 +1875,7 @@ def create_work(
   category: str = Form(""),
   categories: list[str] = Form([]),
   author: str = Form(""),
-  points: int = Form(0),
+  paidTrial: str = Form("false"),
   status: str = Form("published"),
   description: str = Form(""),
   tags: str = Form(""),
@@ -1461,31 +1884,38 @@ def create_work(
   creatorNote: str = Form(""),
   version: str = Form(""),
   cover: Optional[UploadFile] = File(None),
-  file: UploadFile = File(...),
+  file: Optional[UploadFile] = File(None),
   user: dict[str, Any] = Depends(current_user),
 ) -> dict[str, Any]:
   work_id = f"work-{secrets.token_hex(8)}"
-  clean_title = title.strip() or "未命名作品"
+  with db() as conn:
+    active_categories = active_work_categories(conn)
+  clean_title, requested_categories, author_name, clean_description, tag_values, cover_file = require_work_submission_fields(
+    title=title,
+    categories=categories or [category],
+    author=author,
+    description=description,
+    tags=tags,
+    cover=cover,
+    html_file=file,
+    require_html_file=True,
+  )
+  selected_categories = canonical_work_categories(requested_categories, active_categories)
+  paid_trial = truthy_form_value(paidTrial)
   work_folder = user_work_folder(user, clean_title, work_id)
   html_path = write_upload_to_path(file, work_folder / "index.html")
-  if cover and cover.filename:
-    cover_suffix = Path(cover.filename or "").suffix.lower() or ".png"
-    image_url = write_upload_to_path(cover, work_folder / f"cover{cover_suffix}")
-  else:
-    image_url = "images/works/tiny-crm.png"
-  author_name = author.strip() or user["name"]
+  cover_suffix = Path(cover_file.filename or "").suffix.lower() or ".png"
+  image_url = write_upload_to_path(cover_file, work_folder / f"cover{cover_suffix}")
   author_id = user["id"]
   normalized_status = "reviewing"
   with db() as conn:
-    active_categories = active_work_categories(conn)
-    selected_categories = canonical_work_categories(categories or [category], active_categories)
     conn.execute(
       """
       insert into works(
-        id, title, category, author, author_id, points, featured, status, image_url, html_path,
+        id, title, category, author, author_id, points, paid_trial, featured, status, image_url, html_path,
         description, categories_json, tags_json, highlights_json, use_cases_json, creator_note, version, source_type, created_at, updated_at
       )
-      values(?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'user-upload', ?, ?)
+      values(?, ?, ?, ?, ?, 0, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'user-upload', ?, ?)
       """,
       (
         work_id,
@@ -1493,22 +1923,22 @@ def create_work(
         selected_categories[0],
         author_name,
         author_id,
-        max(0, int(points or 0)),
+        1 if paid_trial else 0,
         normalized_status,
         image_url,
         html_path,
-        description.strip(),
+        clean_description,
         json_dumps(selected_categories),
-        json_dumps([item.strip() for item in tags.replace("，", ",").split(",") if item.strip()][:8]),
-        json_dumps([item.strip() for item in highlights.splitlines() if item.strip()][:8]),
-        json_dumps([item.strip() for item in useCases.splitlines() if item.strip()][:8]),
+        json_dumps(tag_values),
+        json_dumps(parsed_lines(highlights)),
+        json_dumps(parsed_lines(useCases)),
         creatorNote.strip(),
         version.strip(),
         today_text(),
         now_text(),
       ),
     )
-    row = conn.execute("select * from works where id = ?", (work_id,)).fetchone()
+    row = work_row(conn, work_id)
     return {"work": public_works([row], active_categories, include_html=True)[0]}
 
 
@@ -1516,7 +1946,7 @@ def create_work(
 def admin_login(payload: AdminLoginPayload) -> dict[str, Any]:
   with db() as conn:
     row = conn.execute("select value_json from settings where id = 'adminAuth'").fetchone()
-    auth = json_loads(row["value_json"], {"username": "admin", "password": "admin"}) if row else {"username": "admin", "password": "admin"}
+    auth = json_loads(row["value_json"], DEFAULT_ADMIN_AUTH) if row else DEFAULT_ADMIN_AUTH
     if payload.username != auth.get("username") or payload.password != auth.get("password"):
       raise HTTPException(status_code=401, detail="后台账号或密码错误")
     token = secrets.token_urlsafe(24)
@@ -1551,7 +1981,7 @@ def admin_update_work(work_id: str, payload: AdminWorkPayload, admin: dict[str, 
         work_id,
       ),
     )
-    row = conn.execute("select * from works where id = ?", (work_id,)).fetchone()
+    row = work_row(conn, work_id)
     return {"work": public_works([row], active_categories, include_html=True)[0]}
 
 
@@ -1561,6 +1991,7 @@ def admin_delete_work(work_id: str, admin: dict[str, Any] = Depends(current_admi
     row = conn.execute("select html_path, image_url from works where id = ?", (work_id,)).fetchone()
     if not row:
       raise HTTPException(status_code=404, detail="作品不存在")
+    conn.execute("delete from work_engagements where work_id = ?", (work_id,))
     conn.execute("delete from works where id = ?", (work_id,))
     work_folders: set[Path] = set()
     for value in (row["html_path"], row["image_url"]):
@@ -1626,6 +2057,7 @@ def admin_delete_user(user_id: str, admin: dict[str, Any] = Depends(current_admi
     conn.execute("delete from sessions where user_id = ?", (user_id,))
     conn.execute("delete from user_profiles where user_id = ?", (user_id,))
     conn.execute("delete from points_records where user_id = ?", (user_id,))
+    conn.execute("delete from work_engagements where user_id = ?", (user_id,))
     conn.execute("delete from users where id = ?", (user_id,))
     return {"ok": True, "id": user_id}
 
@@ -1710,7 +2142,7 @@ def admin_update_settings(payload: AdminSettingsPayload, admin: dict[str, Any] =
   categories = normalize_category_names(payload.categories)
   auth = {
     "username": payload.username.strip() or "admin",
-    "password": payload.password.strip() or "123456",
+    "password": payload.password.strip() or DEFAULT_ADMIN_AUTH["password"],
   }
   with db() as conn:
     conn.execute(
@@ -1740,19 +2172,19 @@ def admin_update_settings(payload: AdminSettingsPayload, admin: dict[str, Any] =
 @app.get("/api/admin/overview")
 def admin_overview() -> dict[str, Any]:
   with db() as conn:
-    work_rows = conn.execute("select * from works").fetchall()
-    heat_rows = [{"id": row["id"], "title": row["title"], "status": row["status"], "heat": calculate_work_heat(row)} for row in work_rows]
+    overview_work_rows = work_rows(conn, order_by="")
+    heat_rows = [{"id": row["id"], "title": row["title"], "status": row["status"], "heat": calculate_work_heat(row)} for row in overview_work_rows]
     total_heat = sum(item["heat"] for item in heat_rows)
     published_heat = sum(item["heat"] for item in heat_rows if item["status"] == "published")
     top_heat = max((item["heat"] for item in heat_rows), default=0)
     return {
       "users": conn.execute("select count(*) as n from users").fetchone()["n"],
-      "works": len(work_rows),
+      "works": len(overview_work_rows),
       "publishedWorks": conn.execute("select count(*) as n from works where status = 'published'").fetchone()["n"],
       "points": conn.execute("select coalesce(sum(points), 0) as n from users").fetchone()["n"],
       "totalHeat": total_heat,
       "publishedHeat": published_heat,
-      "averageHeat": round(total_heat / len(work_rows)) if work_rows else 0,
+      "averageHeat": round(total_heat / len(overview_work_rows)) if overview_work_rows else 0,
       "topHeat": top_heat,
       "heatRanking": sorted(heat_rows, key=lambda item: item["heat"], reverse=True)[:10],
     }

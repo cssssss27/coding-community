@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Coding社区 - 提交作品</title>
-  <link rel="stylesheet" href="css/style.css?v=20260624-vibe-derivatives-1">
+  <link rel="stylesheet" href="css/style.css?v=20260628-engagement-heat-1">
 </head>
 <body class="auth-state-pending" data-page="upload">
   <header class="site-header">
@@ -46,25 +46,28 @@
           <h2>基础信息</h2>
         </div>
 
-        <label class="field-group">
-          <span>作品名称</span>
+        <label class="field-group upload-title-field full">
+          <span>作品名称<b class="required-star" aria-hidden="true">*</b></span>
           <input class="field" name="title" placeholder="例如：清醒市集预约台" required>
         </label>
 
-        <label class="field-group">
-          <span>作品分类</span>
-          <div class="category-select-stack" id="upload-categories"></div>
-        </label>
+        <div class="field-group upload-category-field full">
+          <span>作品分类<b class="required-star" aria-hidden="true">*</b></span>
+          <div class="upload-category-picker" id="upload-categories" aria-label="作品分类，最少选择 1 个，最多选择 3 个"></div>
+        </div>
 
         <label class="field-group">
-          <span>作者显示名</span>
-          <input class="field" name="author" placeholder="默认使用当前登录昵称">
+          <span>作者显示名<b class="required-star" aria-hidden="true">*</b></span>
+          <input class="field" name="author" placeholder="默认使用当前登录昵称" required>
         </label>
 
-        <label class="field-group">
-          <span>出售点数价格</span>
-          <input class="field" name="points" type="number" min="0" step="1" value="18" required>
-        </label>
+        <div class="field-group">
+          <span>是否有偿做同款</span>
+          <div class="paid-trial-control" role="radiogroup" aria-label="是否有偿做同款">
+            <label><input type="radio" name="paidTrial" value="false" checked> 否</label>
+            <label><input type="radio" name="paidTrial" value="true"> 是</label>
+          </div>
+        </div>
 
         <input type="hidden" name="status" value="reviewing">
 
@@ -74,13 +77,13 @@
         </label>
 
         <label class="field-group full">
-          <span>一句话简介</span>
+          <span>一句话简介<b class="required-star" aria-hidden="true">*</b></span>
           <textarea class="field textarea small" name="description" placeholder="说明这个小程序解决什么问题、适合谁使用。" required></textarea>
         </label>
 
         <label class="field-group full">
-          <span>标签</span>
-          <input class="field" name="tags" placeholder="用逗号分隔，例如：预约, 运营, HTML">
+          <span>标签<b class="required-star" aria-hidden="true">*</b></span>
+          <input class="field" name="tags" placeholder="用逗号分隔，例如：预约, 运营, HTML" required>
         </label>
 
         <div class="form-section-head full">
@@ -89,12 +92,12 @@
         </div>
 
         <label class="field-group">
-          <span>作品封面图</span>
-          <input class="field" name="cover" type="file" accept="image/*">
+          <span>作品封面图<b class="required-star" aria-hidden="true">*</b></span>
+          <input class="field" name="cover" type="file" accept="image/*" required>
         </label>
 
         <label class="field-group">
-          <span>HTML 程序文件</span>
+          <span>HTML 程序文件<b class="required-star" aria-hidden="true">*</b></span>
           <input class="field" name="file" type="file" accept=".html,text/html" required>
         </label>
 
@@ -131,7 +134,7 @@
           <span>封面预览</span>
         </div>
         <dl class="upload-summary" id="upload-summary"></dl>
-        <p class="tiny-note">发布后，作品会进入社区瀑布流；点开后展示封面、简介、作者、发布时间、出售点数价格、分类、标签、功能亮点和适用场景。</p>
+        <p class="tiny-note">发布后，作品会进入社区瀑布流；点开后展示封面、简介、作者、发布时间、试用方式、分类、标签、功能亮点和适用场景。</p>
       </aside>
     </section>
   </main>
@@ -142,7 +145,8 @@
   <script src="js/data/ads.table.js"></script>
   <script src="js/data/api-configs.table.js"></script>
   <script src="js/data/points-records.table.js"></script>
-  <script src="js/app.js?v=20260624-vibe-derivatives-1"></script>
+  <script src="js/app.js?v=20260628-engagement-heat-1"></script>
 </body>
 </html>
+
 

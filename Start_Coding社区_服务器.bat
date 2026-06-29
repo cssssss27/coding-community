@@ -1,8 +1,11 @@
 @echo off
 cd /d "%~dp0"
-set "BUNDLED_PY=C:\Users\my computer\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe"
-if exist "%BUNDLED_PY%" (
-  "%BUNDLED_PY%" -m uvicorn server:app --host 127.0.0.1 --port 8000 --reload
-) else (
-  python -m uvicorn server:app --host 127.0.0.1 --port 8000 --reload
-)
+
+if "%CODING_COMMUNITY_PORT%"=="" set "CODING_COMMUNITY_PORT=8010"
+
+echo Starting Coding Community FastAPI server...
+echo Local URL: http://127.0.0.1:%CODING_COMMUNITY_PORT%/
+echo Upload URL: http://127.0.0.1:%CODING_COMMUNITY_PORT%/upload.html
+echo.
+
+python -m uvicorn server:app --host 127.0.0.1 --port %CODING_COMMUNITY_PORT%

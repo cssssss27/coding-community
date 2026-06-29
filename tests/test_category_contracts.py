@@ -54,6 +54,17 @@ class CategoryContracts(unittest.TestCase):
         self.assertIn('id="upload-categories"', upload_html)
         self.assertNotIn('name="category" list="upload-categories"', upload_html)
 
+    def test_upload_page_uses_title_row_and_category_button_picker(self) -> None:
+        app_js = (ROOT / "js" / "app.js").read_text(encoding="utf-8")
+        upload_html = (ROOT / "upload.html").read_text(encoding="utf-8")
+        self.assertIn('class="field-group upload-title-field full"', upload_html)
+        self.assertIn('class="field-group upload-category-field full"', upload_html)
+        self.assertIn('class="upload-category-picker"', upload_html)
+        self.assertIn("renderUploadCategoryButtons", app_js)
+        self.assertIn("data-upload-category", app_js)
+        self.assertIn("最多选择 3 个作品分类", app_js)
+        self.assertNotIn("category-select-stack", upload_html)
+
 
 if __name__ == "__main__":
     unittest.main()

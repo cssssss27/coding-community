@@ -16,6 +16,7 @@ class MigrationScriptTests(unittest.TestCase):
                 "users",
                 "user_profiles",
                 "works",
+                "work_engagements",
                 "sessions",
                 "admin_sessions",
                 "settings",

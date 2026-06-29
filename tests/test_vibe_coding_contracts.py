@@ -127,8 +127,15 @@ class VibeCodingContracts(unittest.TestCase):
         css = (ROOT / "css" / "style.css").read_text(encoding="utf-8")
         self.assertIn("function derivedWorks(work)", app_js)
         self.assertIn("originWorkId", app_js)
-        self.assertIn("原始代码来源", app_js)
-        self.assertIn("source-work-link", app_js)
+        self.assertIn("代码溯源", app_js)
+        self.assertNotIn("原始代码来源", app_js)
+        self.assertIn("source-work-card-link", app_js)
+        self.assertIn("source-work-thumb", app_js)
+        self.assertIn(".source-work-card-link", css)
+        self.assertIn(".source-work-thumb", css)
+        self.assertIn(".work-source-links {\n  display: grid;\n  grid-template-columns: 1fr;", css)
+        self.assertIn("background: #f4f7fb;", css)
+        self.assertIn("border: 1px solid #d8e0ea;", css)
         self.assertIn("衍生作品", app_js)
         self.assertIn("derived.length ? derived.map(compactWorkCard)", app_js)
         self.assertIn("#save-variant", css)
@@ -255,12 +262,29 @@ class VibeCodingContracts(unittest.TestCase):
                 )
             save_response = client.post(
                 f"/api/vibe/sessions/{session_id}/save",
-                json={"title": "Saved Vibe Contract"},
+                data={
+                    "title": "Saved Vibe Contract",
+                    "categories": ["创意组件"],
+                    "author": "VibeTester",
+                    "paidTrial": "true",
+                    "description": "保存后的衍生作品需要完整发布信息。",
+                    "tags": "保存,衍生",
+                    "highlights": "使用会话 HTML",
+                    "useCases": "契约测试",
+                    "creatorNote": "自动化保存",
+                    "version": "contract",
+                },
+                files={"cover": ("cover.png", b"fake-cover", "image/png")},
                 headers=headers,
             )
             self.assertEqual(save_response.status_code, 200)
             work = save_response.json()["work"]
             self.assertEqual(work["title"], "Saved Vibe Contract")
+            self.assertEqual(work["author"], "VibeTester")
+            self.assertTrue(work["paidTrial"])
+            self.assertEqual(work["description"], "保存后的衍生作品需要完整发布信息。")
+            self.assertEqual(work["tags"], ["保存", "衍生"])
+            self.assertIn("uploads/users/", work["image"])
             self.assertEqual(work["sourceType"], "vibe-remix")
             self.assertEqual(work["originWorkId"], "new-wave-flower-stage")
             self.assertEqual(work["originWorkTitle"], source_title)

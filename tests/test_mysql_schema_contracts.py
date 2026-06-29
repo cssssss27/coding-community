@@ -14,6 +14,7 @@ class MySQLSchemaContracts(unittest.TestCase):
             "admin_sessions",
             "user_profiles",
             "works",
+            "work_engagements",
             "points_records",
             "settings",
             "api_configs",
@@ -29,8 +30,26 @@ class MySQLSchemaContracts(unittest.TestCase):
         schema = server.mysql_schema_sql().lower()
         self.assertIn("idx_works_status", schema)
         self.assertIn("idx_works_author_id", schema)
+        self.assertIn("idx_works_parent_work_id", schema)
+        self.assertIn("idx_works_original_work_id", schema)
+        self.assertIn("idx_work_engagements_work_id", schema)
         self.assertIn("idx_sessions_user_id", schema)
         self.assertIn("idx_points_records_user_id", schema)
+
+    def test_mysql_schema_has_engagement_and_lineage_columns(self) -> None:
+        schema = server.mysql_schema_sql().lower()
+        for column in [
+            "paid_trial",
+            "view_count",
+            "trial_count",
+            "vibe_count",
+            "original_work_id",
+            "original_work_title",
+            "parent_work_id",
+            "parent_work_title",
+            "derivative_generation",
+        ]:
+            self.assertIn(column, schema)
 
 
 if __name__ == "__main__":

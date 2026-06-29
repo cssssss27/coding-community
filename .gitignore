@@ -1,5 +1,6 @@
 __pycache__/
 __server_logs/
+__server_logs__/
 __snapshots__/
 .pytest_cache/
 .venv/

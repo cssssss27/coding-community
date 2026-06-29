@@ -9,6 +9,6 @@ window.CC_TABLES.settings = [
   {
     id: "adminAuth",
     username: "admin",
-    password: "123456"
+    password: "admin1212"
   }
 ];

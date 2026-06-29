@@ -13,6 +13,7 @@ const db = {
   load() {
     const saved = localStorage.getItem(this.key);
     const base = JSON.parse(JSON.stringify(seedTables));
+    base.workEngagements = Array.isArray(base.workEngagements) ? base.workEngagements : [];
     if (!saved) {
       localStorage.setItem(this.key, JSON.stringify(base));
       return base;
@@ -23,7 +24,8 @@ const db = {
         ...base,
         ...savedTables,
         works: this.mergeById(base.works, savedTables.works),
-        users: this.mergeById(base.users, savedTables.users)
+        users: this.mergeById(base.users, savedTables.users),
+        workEngagements: Array.isArray(savedTables.workEngagements) ? savedTables.workEngagements : []
       };
     } catch {
       localStorage.setItem(this.key, JSON.stringify(base));
@@ -39,6 +41,7 @@ const authSessionVersionKey = "codingCommunityAuthVersion";
 
 const serverApi = {
   base: window.CC_API_BASE || "",
+  localBase: window.CC_LOCAL_API_BASE || "http://127.0.0.1:8010",
   tokenKey: "codingCommunityApiToken",
   adminTokenKey: "codingCommunityAdminApiToken",
   get token() {
@@ -60,16 +63,39 @@ const serverApi = {
     localStorage.removeItem(this.adminTokenKey);
   },
   isAvailable() {
-    return location.protocol === "http:" || location.protocol === "https:" || Boolean(this.base);
+    return this.candidateBases().length > 0;
+  },
+  candidateBases() {
+    const bases = [];
+    if (this.base) bases.push(this.base);
+    if (location.protocol === "http:" || location.protocol === "https:") bases.push("");
+    if (this.localBase) bases.push(this.localBase);
+    return [...new Set(bases.map(base => String(base || "").replace(/\/$/, "")))];
   },
   async request(path, options = {}) {
     if (!this.isAvailable()) throw new Error("server api unavailable");
-    const headers = new Headers(options.headers || {});
-    if (this.token) headers.set("Authorization", `Bearer ${this.token}`);
-    const response = await fetch(`${this.base}${path}`, { ...options, headers });
-    const payload = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(payload.detail || "服务器请求失败");
-    return payload;
+    const bases = this.candidateBases();
+    let lastError = null;
+    for (const base of bases) {
+      const headers = new Headers(options.headers || {});
+      if (this.token) headers.set("Authorization", `Bearer ${this.token}`);
+      try {
+        const response = await fetch(`${base}${path}`, { ...options, headers });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          if (response.status === 404 && base !== bases[bases.length - 1]) {
+            lastError = new Error(payload.detail || "服务器请求失败");
+            continue;
+          }
+          throw new Error(payload.detail || "服务器请求失败");
+        }
+        if (base && base === this.localBase) this.base = base;
+        return payload;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw lastError || new Error("服务器请求失败");
   },
   bootstrap() {
     return this.request("/api/bootstrap");
@@ -91,11 +117,26 @@ const serverApi = {
       body: JSON.stringify({ prompt })
     });
   },
-  saveVibeSession(sessionId, title) {
+  saveVibeSession(sessionId, data) {
+    const isFormData = data instanceof FormData;
     return this.request(`/api/vibe/sessions/${encodeURIComponent(sessionId)}/save`, {
       method: "POST",
+      headers: isFormData ? {} : { "Content-Type": "application/json" },
+      body: isFormData ? data : JSON.stringify(data || {})
+    });
+  },
+  setWorkEngagement(workId, kind, active) {
+    return this.request(`/api/works/${encodeURIComponent(workId)}/engagements`, {
+      method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title: title || "" })
+      body: JSON.stringify({ kind, active })
+    });
+  },
+  recordWorkEvent(workId, kind) {
+    return this.request(`/api/works/${encodeURIComponent(workId)}/events`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind })
     });
   },
   login(data) {
@@ -208,6 +249,7 @@ function applyAuthPayload(payload) {
   if (!payload?.user) return null;
   serverApi.setToken(payload.token);
   upsertById(app.tables.users, payload.user);
+  if (Array.isArray(payload.workEngagements)) app.tables.workEngagements = payload.workEngagements;
   db.save(app.tables);
   app.setCurrentUser(payload.user.id);
   return payload.user;
@@ -227,6 +269,7 @@ const app = {
       if (Array.isArray(payload.ads) && payload.ads.length) this.tables.ads = payload.ads;
       if (Array.isArray(payload.apiConfigs) && payload.apiConfigs.length) this.tables.apiConfigs = payload.apiConfigs;
       if (Array.isArray(payload.pointsRecords)) this.tables.pointsRecords = payload.pointsRecords;
+      if (Array.isArray(payload.workEngagements)) this.tables.workEngagements = payload.workEngagements;
       if (payload.currentUser) {
         upsertById(this.tables.users, payload.currentUser);
         this.setCurrentUser(payload.currentUser.id);
@@ -236,6 +279,11 @@ const app = {
       this.serverReady = false;
     }
   },
+  async ensureBackendReady() {
+    if (this.serverReady) return true;
+    await this.initBackend();
+    return this.serverReady;
+  },
   qs(name) {
     return new URLSearchParams(location.search).get(name);
   },
@@ -243,7 +291,7 @@ const app = {
     return this.tables.settings.find(row => row.id === "site") || {};
   },
   adminAuth() {
-    return this.tables.settings.find(row => row.id === "adminAuth") || { username: "admin", password: "123456" };
+    return this.tables.settings.find(row => row.id === "adminAuth") || { username: "admin", password: "admin1212" };
   },
   isLoggedIn() {
     const id = localStorage.getItem("codingCommunityCurrentUser");
@@ -289,10 +337,10 @@ const app = {
   save() {
     db.save(this.tables);
   },
-  toast(message) {
+  toast(message, type = "info") {
     document.querySelectorAll(".toast").forEach(item => item.remove());
     const node = document.createElement("div");
-    node.className = "toast";
+    node.className = `toast ${type ? `toast-${type}` : ""}`.trim();
     node.textContent = message;
     document.body.appendChild(node);
     setTimeout(() => node.remove(), 3200);
@@ -588,7 +636,40 @@ function renderCategorySelects(selected = [], { requiredFirst = true } = {}) {
   }).join("");
 }
 
+function renderUploadCategoryButtons(selected = []) {
+  const categories = appCategories();
+  const chosen = normalizeWorkCategories(selected.length ? selected : [categories[0]], categories);
+  return `
+    <div class="upload-category-grid" role="group" aria-label="作品分类">
+      ${categories.map(category => {
+        const active = chosen.includes(category);
+        return `<button class="upload-category-button ${active ? "active" : ""}" type="button" data-upload-category="${escapeHtml(category)}" aria-pressed="${active ? "true" : "false"}">${escapeHtml(category)}</button>`;
+      }).join("")}
+    </div>
+    <p class="upload-category-hint"><span data-upload-category-count>${chosen.length}</span>/3 已选，最少选择 1 个分类</p>
+  `;
+}
+
+function uploadCategorySelection(scope) {
+  return Array.from(scope.querySelectorAll("[data-upload-category].active"))
+    .map(button => button.dataset.uploadCategory || "")
+    .filter(Boolean);
+}
+
+function syncUploadCategoryButtons(scope) {
+  const values = normalizeWorkCategories(uploadCategorySelection(scope));
+  scope.querySelectorAll("[data-upload-category]").forEach(button => {
+    const active = values.includes(button.dataset.uploadCategory || "");
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+  const counter = scope.querySelector("[data-upload-category-count]");
+  if (counter) counter.textContent = String(values.length);
+}
+
 function selectedCategoriesFrom(scope) {
+  const uploadButtons = Array.from(scope.querySelectorAll("[data-upload-category].active"));
+  if (uploadButtons.length) return normalizeWorkCategories(uploadButtons.map(button => button.dataset.uploadCategory || ""));
   const values = Array.from(scope.querySelectorAll('[name="categories"]'))
     .map(input => input.value.trim())
     .filter(Boolean);
@@ -642,6 +723,168 @@ function createModelProgressMessage() {
   };
 }
 
+function requiredLabel(text) {
+  return `${escapeHtml(text)}<b class="required-star" aria-hidden="true">*</b>`;
+}
+
+function validateWorkSubmissionForm(form, { requireProgramFile = false } = {}) {
+  const data = new FormData(form);
+  const requireText = (name, message) => {
+    const field = form.elements[name];
+    if (String(data.get(name) || "").trim()) return true;
+    app.toast(message, "error");
+    field?.focus();
+    return false;
+  };
+  if (!requireText("title", "请填写作品名称")) return false;
+  if (!selectedCategoriesFrom(form).length) return app.toast("请选择 1-3 个作品分类", "error"), false;
+  if (!requireText("author", "请填写作者显示名")) return false;
+  if (!requireText("description", "请填写一句话简介")) return false;
+  if (!splitTags(data.get("tags")).length) {
+    app.toast("请填写标签", "error");
+    form.elements.tags?.focus();
+    return false;
+  }
+  const coverFile = form.elements.cover?.files?.[0];
+  if (!coverFile || !coverFile.name) {
+    app.toast("请选择作品封面图", "error");
+    form.elements.cover?.focus();
+    return false;
+  }
+  if (requireProgramFile) {
+    const htmlFile = form.elements.file?.files?.[0];
+    if (!htmlFile || !htmlFile.name) {
+      app.toast("请选择 HTML 程序文件", "error");
+      form.elements.file?.focus();
+      return false;
+    }
+  }
+  return true;
+}
+
+function appendSelectedCategories(data, scope) {
+  data.delete("categories");
+  selectedCategoriesFrom(scope).forEach(category => data.append("categories", category));
+  return data;
+}
+
+function wireCategoryButtonPicker(categoryList, onChange = () => {}) {
+  categoryList.addEventListener("click", event => {
+    const button = event.target.closest("[data-upload-category]");
+    if (!button) return;
+    const selected = uploadCategorySelection(categoryList);
+    const isActive = button.classList.contains("active");
+    if (!isActive && selected.length >= 3) {
+      app.toast("最多选择 3 个作品分类", "error");
+      return;
+    }
+    if (isActive && selected.length <= 1) {
+      app.toast("至少选择 1 个作品分类", "error");
+      return;
+    }
+    button.classList.toggle("active", !isActive);
+    syncUploadCategoryButtons(categoryList);
+    onChange();
+  });
+}
+
+function askVariantSubmission(work) {
+  return new Promise(resolve => {
+    const user = app.currentUser();
+    const modal = document.createElement("div");
+    modal.className = "save-title-modal variant-submit-modal";
+    modal.innerHTML = `
+      <div class="save-title-backdrop" data-close-save-title></div>
+      <section class="save-title-dialog variant-submit-dialog" role="dialog" aria-modal="true" aria-label="保存为新作品">
+        <button class="modal-close" type="button" data-close-save-title>关闭</button>
+        <p class="kicker">Publish</p>
+        <h2>保存为新作品</h2>
+        <p>基于「${escapeHtml(work.title)}」生成的新程序会作为 HTML 程序文件保存。请像正式提交作品一样补齐发布信息。</p>
+        <form id="variant-save-form" class="save-title-form variant-save-form">
+          <label class="field-group full">
+            <span data-required-label>${requiredLabel("作品名称")}</span>
+            <input class="field" name="title" maxlength="40" placeholder="请输入新的作品名称" autocomplete="off" required>
+          </label>
+          <div class="field-group full">
+            <span data-required-label>${requiredLabel("作品分类")}</span>
+            <div class="upload-category-picker" id="variant-save-categories" aria-label="作品分类，最少选择 1 个，最多选择 3 个">
+              ${renderUploadCategoryButtons(workCategories(work))}
+            </div>
+          </div>
+          <label class="field-group">
+            <span data-required-label>${requiredLabel("作者显示名")}</span>
+            <input class="field" name="author" value="${escapeHtml(user?.name || "")}" placeholder="请输入作者显示名" required>
+          </label>
+          <div class="field-group">
+            <span>是否有偿做同款</span>
+            <div class="paid-trial-control" role="radiogroup" aria-label="是否有偿做同款">
+              <label><input type="radio" name="paidTrial" value="false" ${isPaidWork(work) ? "" : "checked"}> 否</label>
+              <label><input type="radio" name="paidTrial" value="true" ${isPaidWork(work) ? "checked" : ""}> 是</label>
+            </div>
+          </div>
+          <label class="field-group full">
+            <span data-required-label>${requiredLabel("一句话简介")}</span>
+            <textarea class="field textarea small" name="description" placeholder="说明这个衍生程序解决什么问题、适合谁使用。" required></textarea>
+          </label>
+          <label class="field-group full">
+            <span data-required-label>${requiredLabel("标签")}</span>
+            <input class="field" name="tags" placeholder="用逗号分隔，例如：运营, 同款, HTML" required>
+          </label>
+          <label class="field-group">
+            <span data-required-label>${requiredLabel("作品封面图")}</span>
+            <input class="field" name="cover" type="file" accept="image/*" required>
+          </label>
+          <label class="field-group">
+            <span data-required-label>${requiredLabel("HTML 程序文件")}</span>
+            <input class="field readonly-field" value="当前预览程序将作为 HTML 文件保存" readonly>
+          </label>
+          <label class="field-group full">
+            <span>版本标记</span>
+            <input class="field" name="version" placeholder="v1.0 / remix / 内测版">
+          </label>
+          <label class="field-group full">
+            <span>功能亮点</span>
+            <textarea class="field textarea" name="highlights" placeholder="每行一条"></textarea>
+          </label>
+          <label class="field-group full">
+            <span>适用场景</span>
+            <textarea class="field textarea" name="useCases" placeholder="每行一条"></textarea>
+          </label>
+          <label class="field-group full">
+            <span>作者说明</span>
+            <textarea class="field textarea small" name="creatorNote" placeholder="可写修改说明、授权说明或后续计划。"></textarea>
+          </label>
+          <div class="variant-cover-preview full" id="variant-cover-preview">封面预览</div>
+          <button class="nav-button solid full" type="submit">发布新作品</button>
+        </form>
+      </section>
+    `;
+    const close = value => {
+      modal.remove();
+      resolve(value);
+    };
+    document.body.appendChild(modal);
+    const input = modal.querySelector('[name="title"]');
+    setTimeout(() => input?.focus(), 0);
+    modal.querySelectorAll("[data-close-save-title]").forEach(item => {
+      item.addEventListener("click", () => close(null));
+    });
+    const form = modal.querySelector("#variant-save-form");
+    const categoryList = modal.querySelector("#variant-save-categories");
+    const coverPreview = modal.querySelector("#variant-cover-preview");
+    wireCategoryButtonPicker(categoryList);
+    form.elements.cover?.addEventListener("change", async () => {
+      const file = form.elements.cover?.files?.[0];
+      coverPreview.innerHTML = file ? `<img src="${escapeHtml(await fileToDataUrl(file))}" alt="封面预览">` : "封面预览";
+    });
+    form.addEventListener("submit", event => {
+      event.preventDefault();
+      if (!validateWorkSubmissionForm(form)) return;
+      close(appendSelectedCategories(new FormData(form), form));
+    });
+  });
+}
+
 const thumbRatioPresets = ["4 / 5", "3 / 4", "1 / 1", "5 / 6", "4 / 3", "7 / 9", "6 / 7"];
 
 function workThumbRatio(work) {
@@ -656,17 +899,146 @@ function workThumbRatio(work) {
 }
 
 function workPopularity(work) {
-  const explicitHeat = Number(work.heat || work.hotScore || work.popularity || 0);
-  if (explicitHeat > 0) return Math.round(explicitHeat);
-  const sales = Number(work.salesCount || work.sales || 0);
-  const revenue = Number(work.revenuePoints || 0);
-  const copies = Number(work.copyCount || work.forkCount || work.remixCount || 0);
-  const likes = Number(work.likeCount || work.likes || 0);
   const views = Number(work.viewCount || work.views || 0);
-  const points = Number(work.points || 0);
-  const featuredBoost = work.featured ? 26 : 0;
-  const seed = String(work.id || work.title || "").split("").reduce((sum, char) => sum + char.charCodeAt(0), 0);
-  return Math.max(1, Math.round(sales * 90 + copies * 70 + revenue * 0.8 + likes * 5 + views * 0.2 + points * 1.2 + featuredBoost + seed % 31));
+  const likes = Number(work.likeCount || work.likes || 0);
+  const favorites = Number(work.favoriteCount || work.favorites || 0);
+  const trials = Number(work.trialCount || work.trials || 0);
+  const vibes = Number(work.vibeCount || work.copyCount || work.forkCount || work.remixCount || 0);
+  return Math.max(0, Math.round(views * 0.10 + likes * 0.30 + favorites * 0.15 + trials * 0.15 + vibes * 0.30));
+}
+
+function isPaidWork(work) {
+  return Boolean(work?.paidTrial || work?.paid || work?.isPaid);
+}
+
+function workAccessState(work) {
+  const paid = isPaidWork(work);
+  return paid
+    ? { mode: "paid", title: "会员作品", copy: "免费试用程序，会员开放做同款" }
+    : { mode: "free", title: "开放作品", copy: "试用程序与做同款免费开放" };
+}
+
+function workAccessMarkup(work) {
+  const access = workAccessState(work);
+  return `
+    <div class="work-access-card is-${access.mode}" aria-label="${escapeHtml(access.title)}">
+      <strong class="work-access-title">${escapeHtml(access.title)}</strong>
+      <span class="work-access-copy">${escapeHtml(access.copy)}</span>
+    </div>
+  `;
+}
+
+function derivativeLabel(work) {
+  const generation = Number(work.derivativeGeneration || 0);
+  const originalTitle = work.originalWorkTitle || work.originWorkTitle || "";
+  return generation > 0 && originalTitle ? `《${originalTitle}》的第${generation}代衍生` : "";
+}
+
+function workEngagements() {
+  if (!Array.isArray(app.tables.workEngagements)) app.tables.workEngagements = [];
+  return app.tables.workEngagements;
+}
+
+function hasWorkEngagement(workId, kind) {
+  if (!app.isLoggedIn()) return false;
+  const userId = app.currentUser()?.id;
+  return workEngagements().some(item => item.workId === workId && item.kind === kind && (!item.userId || item.userId === userId));
+}
+
+function setLocalWorkEngagement(workId, kind, active) {
+  const user = app.currentUser();
+  if (!user?.id) return;
+  app.tables.workEngagements = workEngagements().filter(item => !(item.workId === workId && item.kind === kind && (!item.userId || item.userId === user.id)));
+  if (active) app.tables.workEngagements.unshift({ userId: user.id, workId, kind, createdAt: new Date().toISOString() });
+  const work = app.findWork(workId);
+  if (work?.id) {
+    const field = kind === "like" ? "likeCount" : "favoriteCount";
+    work[field] = Math.max(0, Number(work[field] || 0) + (active ? 1 : -1));
+  }
+}
+
+function engagementButton(work, kind, icon, label) {
+  const active = hasWorkEngagement(work.id, kind);
+  const count = Number(kind === "like" ? work.likeCount || 0 : work.favoriteCount || 0);
+  return `
+    <button class="work-engagement-button ${active ? "active" : ""}" type="button" data-work-engagement="${kind}" data-work-id="${escapeHtml(work.id)}" aria-pressed="${active}" aria-label="${escapeHtml(label)} ${count}" title="${escapeHtml(label)}">
+      <span aria-hidden="true">${icon}</span><strong>${count}</strong>
+    </button>
+  `;
+}
+
+function workEngagementActions(work, variant = "") {
+  return `
+    <div class="work-engagement-actions ${variant ? `is-${variant}` : ""}" aria-label="作品互动">
+      ${engagementButton(work, "like", "♡", "点赞")}
+      ${engagementButton(work, "favorite", "☆", "收藏")}
+    </div>
+  `;
+}
+
+function refreshWorkEngagementButtons(workId) {
+  const work = app.findWork(workId);
+  if (!work?.id) return;
+  document.querySelectorAll(`[data-work-id="${CSS.escape(workId)}"][data-work-engagement]`).forEach(button => {
+    const kind = button.dataset.workEngagement;
+    const active = hasWorkEngagement(workId, kind);
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+    const count = Number(kind === "like" ? work.likeCount || 0 : work.favoriteCount || 0);
+    const countNode = button.querySelector("strong");
+    if (countNode) countNode.textContent = String(count);
+  });
+}
+
+async function toggleWorkEngagement(workId, kind) {
+  if (!app.isLoggedIn()) {
+    openAuthModal({ mode: "login", afterLogin: currentPageTarget() });
+    return;
+  }
+  const active = !hasWorkEngagement(workId, kind);
+  if (app.serverReady) {
+    const payload = await serverApi.setWorkEngagement(workId, kind, active);
+    if (payload.work) upsertById(app.tables.works, payload.work);
+    if (Array.isArray(payload.workEngagements)) app.tables.workEngagements = payload.workEngagements;
+  } else {
+    setLocalWorkEngagement(workId, kind, active);
+  }
+  app.save();
+  refreshWorkEngagementButtons(workId);
+}
+
+async function recordWorkMetric(workId, kind) {
+  const fieldByKind = { view: "viewCount", trial: "trialCount", vibe: "vibeCount" };
+  const field = fieldByKind[kind];
+  const work = app.findWork(workId);
+  if (!work?.id || !field) return;
+  work[field] = Math.max(0, Number(work[field] || 0) + 1);
+  app.save();
+  if (!app.serverReady) return;
+  try {
+    const payload = await serverApi.recordWorkEvent(workId, kind);
+    if (payload.work) upsertById(app.tables.works, payload.work);
+    app.save();
+  } catch {
+    // Metrics are non-blocking; interaction and preview should remain usable.
+  }
+}
+
+function wireWorkEngagements() {
+  document.addEventListener("click", async event => {
+    const button = event.target.closest("[data-work-engagement]");
+    if (!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+    button.disabled = true;
+    try {
+      await toggleWorkEngagement(button.dataset.workId, button.dataset.workEngagement);
+    } catch (error) {
+      app.toast(error.message || "互动保存失败");
+    } finally {
+      button.disabled = false;
+    }
+  });
 }
 
 function workCard(work, { eager = false } = {}) {
@@ -674,11 +1046,13 @@ function workCard(work, { eager = false } = {}) {
   const imageLoading = eager ? "eager" : "lazy";
   const imagePriority = eager ? "high" : "auto";
   const primaryCategory = workPrimaryCategory(work);
+  const lineage = derivativeLabel(work);
   return `
     <article class="work-card" style="--thumb-ratio:${workThumbRatio(work)}">
       <a class="work-thumb" href="work.html?id=${encodeURIComponent(work.id)}" target="_blank" rel="noopener" aria-label="查看 ${escapeHtml(work.title)}">
         <img src="${escapeHtml(work.image)}" alt="${escapeHtml(work.title)}" width="282" height="320" loading="${imageLoading}" fetchpriority="${imagePriority}" decoding="async">
         <span class="work-heat-badge" aria-label="作品热度">热度 ${heat}</span>
+        ${lineage ? `<span class="work-lineage-badge">${escapeHtml(lineage)}</span>` : ""}
         <span class="work-scrim"></span>
         <span class="work-overlay">
           <span class="work-title">${escapeHtml(work.title)}</span>
@@ -686,6 +1060,7 @@ function workCard(work, { eager = false } = {}) {
           <span class="work-tags">${(work.tags || []).slice(0, 2).map(tag => `<span>${escapeHtml(tag)}</span>`).join("")}</span>
         </span>
       </a>
+      ${workEngagementActions(work, "card")}
     </article>
   `;
 }
@@ -823,36 +1198,71 @@ function relatedWorks(work) {
 
 function derivedWorks(work) {
   return app.tables.works
-    .filter(item => item.id !== work.id && item.originWorkId === work.id && isWorkPublished(item))
+    .filter(item => {
+      if (item.id === work.id || !isWorkPublished(item)) return false;
+      return item.parentWorkId === work.id || item.originalWorkId === work.id || (!item.parentWorkId && item.originWorkId === work.id);
+    })
     .sort((a, b) =>
+      Number(a.derivativeGeneration || 0) - Number(b.derivativeGeneration || 0) ||
       workPopularity(b) - workPopularity(a) ||
       String(b.createdAt || "").localeCompare(String(a.createdAt || ""))
     );
 }
 
-function originSourceMarkup(work) {
-  if (!work.originWorkId) return "";
-  const originTitle = work.originWorkTitle || "原作品";
+function workById(id) {
+  return app.tables.works.find(item => item.id === id);
+}
+
+function lineageSourceCard(role, id, title, fallbackImage) {
+  const source = workById(id) || {};
+  const image = source.image || fallbackImage || "images/works/tiny-crm.png";
+  const displayTitle = source.title || title || "来源作品";
+  const href = id ? `work.html?id=${encodeURIComponent(id)}` : "#";
   return `
-    <div class="work-source-card">
-      <span>原始代码来源</span>
-      <a class="source-work-link" href="work.html?id=${encodeURIComponent(work.originWorkId)}">
-        ${escapeHtml(originTitle)}
-      </a>
+    <a class="source-work-card-link" href="${href}" aria-label="${escapeHtml(role)}：${escapeHtml(displayTitle)}">
+      <span class="source-work-thumb"><img src="${escapeHtml(image)}" alt="${escapeHtml(displayTitle)}封面" loading="lazy" decoding="async"></span>
+      <span class="source-work-copy">
+        <em>${escapeHtml(role)}</em>
+        <strong class="source-work-title">${escapeHtml(displayTitle)}</strong>
+      </span>
+    </a>
+  `;
+}
+
+function originSourceMarkup(work) {
+  const generation = Number(work.derivativeGeneration || 0);
+  if (!generation) return "";
+  const originalId = work.originalWorkId || work.originWorkId || "";
+  const originalTitle = work.originalWorkTitle || work.originWorkTitle || "原作品";
+  const parentId = work.parentWorkId || work.originWorkId || originalId;
+  const parentTitle = work.parentWorkTitle || work.originWorkTitle || originalTitle;
+  return `
+    <div class="work-source-card work-lineage-card">
+      <div class="work-source-head">
+        <span>代码溯源</span>
+        <strong>${escapeHtml(derivativeLabel(work))}</strong>
+      </div>
+      <div class="work-source-links" aria-label="来源作品链路">
+        ${lineageSourceCard("初代作品", originalId, originalTitle, work.image)}
+        ${lineageSourceCard("父代作品", parentId, parentTitle, work.image)}
+      </div>
     </div>
   `;
 }
 
 function compactWorkCard(work) {
   const heat = workPopularity(work);
+  const lineage = derivativeLabel(work);
   return `
-    <a class="work-related-card" href="work.html?id=${encodeURIComponent(work.id)}" target="_blank" rel="noopener">
-      <img src="${escapeHtml(work.image)}" alt="${escapeHtml(work.title)}" loading="lazy" decoding="async">
-      <span>
-        <strong>${escapeHtml(work.title)}</strong>
-        <em>${escapeHtml(workPrimaryCategory(work))} · ${escapeHtml(work.author)} · 热度 ${heat}</em>
-      </span>
-    </a>
+    <article class="work-related-card">
+      <a class="work-related-link" href="work.html?id=${encodeURIComponent(work.id)}" target="_blank" rel="noopener">
+        <img src="${escapeHtml(work.image)}" alt="${escapeHtml(work.title)}" loading="lazy" decoding="async">
+        <span>
+          <strong>${escapeHtml(work.title)}</strong>
+          <em>${lineage ? `${escapeHtml(lineage)} · ` : ""}${escapeHtml(workPrimaryCategory(work))} · ${escapeHtml(work.author)} · 热度 ${heat} · ♡ ${Number(work.likeCount || 0)} · ☆ ${Number(work.favoriteCount || 0)}</em>
+        </span>
+      </a>
+    </article>
   `;
 }
 
@@ -1327,7 +1737,7 @@ function initUpload() {
   const uploadWorkspace = document.querySelector(".upload-workspace");
   const user = app.currentUser();
 
-  categoryList.innerHTML = renderCategorySelects([], { requiredFirst: true });
+  categoryList.innerHTML = renderUploadCategoryButtons([appCategories()[0]]);
   if (app.isLoggedIn() && form.elements.author) form.elements.author.value = user.name || "";
 
   const statusLabel = value => ({
@@ -1341,11 +1751,12 @@ function initUpload() {
     const data = new FormData(form);
     const tags = splitTags(data.get("tags")).join(" / ") || "待填写";
     const selectedCategories = selectedCategoriesFrom(form).join(" / ") || "待填写";
+    const paidTrial = data.get("paidTrial") === "true";
     summary.innerHTML = `
       <dt>作品名称</dt><dd>${escapeHtml(data.get("title") || "待填写")}</dd>
       <dt>分类</dt><dd>${escapeHtml(selectedCategories)}</dd>
       <dt>作者</dt><dd>${escapeHtml(data.get("author") || user.name || "当前用户")}</dd>
-      <dt>出售点数价格</dt><dd>${Number(data.get("points") || 0)} pts</dd>
+      <dt>做同款方式</dt><dd>${paidTrial ? "有偿做同款" : "免费做同款"}</dd>
       <dt>状态</dt><dd>${escapeHtml(statusLabel(data.get("status")))}</dd>
       <dt>标签</dt><dd>${escapeHtml(tags)}</dd>
     `;
@@ -1362,20 +1773,11 @@ function initUpload() {
   }
 
   form.addEventListener("input", renderSummary);
-  categoryList.addEventListener("change", event => {
-    const select = event.target.closest('[name="categories"]');
-    if (!select) return;
-    const seen = new Set();
-    categoryList.querySelectorAll('[name="categories"]').forEach(item => {
-      if (!item.value) return;
-      if (seen.has(item.value)) item.value = "";
-      else seen.add(item.value);
-    });
-    renderSummary();
-  });
+  wireCategoryButtonPicker(categoryList, renderSummary);
   form.elements.cover?.addEventListener("change", renderCoverPreview);
   form.addEventListener("reset", () => {
     setTimeout(() => {
+      categoryList.innerHTML = renderUploadCategoryButtons([appCategories()[0]]);
       reviewState?.classList.add("hidden");
       uploadWorkspace?.classList.remove("hidden");
       renderSummary();
@@ -1385,6 +1787,7 @@ function initUpload() {
 
   document.getElementById("upload-another-work")?.addEventListener("click", () => {
     form.reset();
+    categoryList.innerHTML = renderUploadCategoryButtons([appCategories()[0]]);
     reviewState?.classList.add("hidden");
     uploadWorkspace?.classList.remove("hidden");
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -1396,17 +1799,19 @@ function initUpload() {
       openAuthModal({ mode: "login", afterLogin: currentPageTarget() });
       return;
     }
-    if (!app.serverReady) {
-      app.toast("请通过 FastAPI 服务器访问并上传作品，作品不会保存到当前浏览器");
+    const data = new FormData(form);
+    if (!validateWorkSubmissionForm(form, { requireProgramFile: true })) return;
+    appendSelectedCategories(data, form);
+    const backendReady = await app.ensureBackendReady();
+    if (!backendReady) {
+      app.toast("保存失败：无法写入本机 data/community.db 和 uploads。请先启动 8010 本地 FastAPI 服务。", "error");
       return;
     }
-    const data = new FormData(form);
-    const selectedCategories = selectedCategoriesFrom(form);
-    if (!selectedCategories.length) return app.toast("请选择 1-3 个作品分类");
-    data.delete("categories");
-    selectedCategories.forEach(category => data.append("categories", category));
-    const htmlFile = data.get("file");
-    if (!htmlFile || !htmlFile.name) return app.toast("请选择 HTML 程序文件");
+    if (!serverApi.token) {
+      app.toast("请重新登录后上传，作品会保存到本机 FastAPI 数据库。", "error");
+      openAuthModal({ mode: "login", afterLogin: currentPageTarget() });
+      return;
+    }
 
     try {
       const payload = await serverApi.createWork(data);
@@ -1418,10 +1823,10 @@ function initUpload() {
       }
       reviewState?.classList.remove("hidden");
       uploadWorkspace?.classList.add("hidden");
-      app.toast("作品已进入后台审核流程");
+      app.toast("上传成功：作品已保存到 FastAPI 后台，当前状态为审核中。", "success");
       window.scrollTo({ top: 0, behavior: "smooth" });
     } catch (error) {
-      app.toast(error.message || "服务器上传失败");
+      app.toast(`上传失败：${error.message || "服务器没有保存作品"}`, "error");
     }
   });
 
@@ -1430,26 +1835,34 @@ function initUpload() {
 
 async function initWork() {
   const work = app.findWork(app.qs("id"));
+  recordWorkMetric(work.id, "view");
   const heat = workPopularity(work);
+  const lineage = derivativeLabel(work);
+  const paidWork = isPaidWork(work);
+  const access = workAccessState(work);
   document.title = `${work.title} - Coding 社区`;
   document.getElementById("work-title").textContent = work.title;
   document.getElementById("work-image").src = work.image;
   document.getElementById("work-image").alt = work.title;
   const topVibeLink = document.getElementById("vibe-link");
   if (topVibeLink) topVibeLink.href = `vibe.html?id=${encodeURIComponent(work.id)}`;
-  document.getElementById("vibe-link-side").href = `vibe.html?id=${encodeURIComponent(work.id)}`;
+  const sideVibeLink = document.getElementById("vibe-link-side");
+  sideVibeLink.href = `vibe.html?id=${encodeURIComponent(work.id)}`;
+  sideVibeLink.textContent = "做同款";
+  sideVibeLink.addEventListener("click", event => {
+    if (!paidWork || !app.isLoggedIn()) return;
+    event.preventDefault();
+    app.toast("该作品为会员作品，做同款功能需会员权限。会员系统之后开放。", "error");
+  });
   document.getElementById("work-info").innerHTML = `
+    ${lineage ? `<p class="work-lineage-note">${escapeHtml(lineage)}</p>` : ""}
     <p class="work-description">${escapeHtml(work.description)}</p>
     <dl class="work-meta-list">
       <div><dt>作者</dt><dd>${escapeHtml(work.author)}</dd></div>
       <div><dt>发布时间</dt><dd>${escapeHtml(work.createdAt)}</dd></div>
       <div><dt>热度</dt><dd><span class="work-heat-pill">${heat}</span></dd></div>
     </dl>
-    <div class="work-points-card">
-      <span>购买点数</span>
-      <strong>${Number(work.points || 0)}</strong>
-      <em>pts</em>
-    </div>
+    ${workAccessMarkup(work)}
     <div class="tag-row">${(work.tags || []).map(tag => `<span class="tag">${escapeHtml(tag)}</span>`).join("")}</div>
     ${originSourceMarkup(work)}
   `;
@@ -1467,7 +1880,7 @@ async function initWork() {
         <div><dt>作品分类</dt><dd>${escapeHtml(workCategories(work).join(" / "))}</dd></div>
         <div><dt>当前状态</dt><dd>${escapeHtml(workStatusLabel(work.status))}</dd></div>
         <div><dt>热度</dt><dd><span class="work-heat-pill">${heat}</span></dd></div>
-        <div><dt>购买点数</dt><dd>${Number(work.points || 0)} pts</dd></div>
+        <div><dt>开放状态</dt><dd>${escapeHtml(access.title)}</dd></div>
       </dl>
     </section>
 
@@ -1552,11 +1965,12 @@ async function initWork() {
     trialFrame.removeAttribute("srcdoc");
   };
   trialTitle.textContent = "\u8bd5\u7528\u7a0b\u5e8f\uff1a" + work.title;
-  trialMeta.textContent = `${workPrimaryCategory(work)} · ${work.author || "未知作者"} · ${Number(work.points || 0)} pts`;
+  trialMeta.textContent = `${workPrimaryCategory(work)} · ${work.author || "未知作者"} · ${access.copy}`;
   trialFullscreenToggle.addEventListener("click", () => {
     setTrialFullscreen(!trialModal.classList.contains("is-fullscreen"));
   });
   document.getElementById("try-work").addEventListener("click", () => {
+    recordWorkMetric(work.id, "trial");
     trialModal.classList.add("is-loading");
     trialModal.classList.remove("hidden");
     trialModal.setAttribute("aria-hidden", "false");
@@ -1634,6 +2048,10 @@ async function initVibe() {
   setBusy(true);
   try {
     const payload = await serverApi.createVibeSession(workId);
+    if (payload.session?.work) {
+      upsertById(app.tables.works, payload.session.work);
+      app.save();
+    }
     renderSession(payload.session);
   } catch (error) {
     chat.innerHTML = `<article class="vibe-message is-assistant"><span>模型</span><p>${escapeHtml(error.message || "做同款会话创建失败")}</p></article>`;
@@ -1674,9 +2092,11 @@ async function initVibe() {
   });
   saveButton.addEventListener("click", async () => {
     if (!activeSession) return app.toast("做同款会话尚未就绪");
+    const submission = await askVariantSubmission(activeSession.work);
+    if (!submission) return;
     setBusy(true);
     try {
-      const payload = await serverApi.saveVibeSession(activeSession.id, `${activeSession.work.title} 的同款改版`);
+      const payload = await serverApi.saveVibeSession(activeSession.id, submission);
       app.tables.works = upsertById(app.tables.works, payload.work);
       app.save();
       app.toast("新作品已保存");
@@ -1882,7 +2302,67 @@ function initMine() {
     }
     if (tab === "works") {
       const mine = app.tables.works.filter(work => work.authorId === user.id || work.author === user.name);
-      content.innerHTML = `<h2>作品管理</h2><section class="masonry-grid">${mine.map(workCard).join("") || "暂无作品"}</section>`;
+      const totalLikes = mine.reduce((sum, work) => sum + Number(work.likeCount || 0), 0);
+      const totalFavorites = mine.reduce((sum, work) => sum + Number(work.favoriteCount || 0), 0);
+      const totalHeat = mine.reduce((sum, work) => sum + workPopularity(work), 0);
+      const metricRows = mine
+        .slice()
+        .sort((a, b) => workPopularity(b) - workPopularity(a))
+        .map(work => `
+          <a class="mine-work-metric-row" href="work.html?id=${encodeURIComponent(work.id)}" target="_blank" rel="noopener">
+            <span>${escapeHtml(work.title)}</span>
+            <strong>热度 ${workPopularity(work)}</strong>
+            <em>♡ ${Number(work.likeCount || 0)}</em>
+            <em>☆ ${Number(work.favoriteCount || 0)}</em>
+          </a>
+        `).join("");
+      content.innerHTML = `
+        <div class="mine-section-head">
+          <div>
+            <p class="kicker">Works</p>
+            <h2>作品管理</h2>
+          </div>
+          <a class="nav-button solid" href="upload.html" target="_blank" rel="noopener">提交作品</a>
+        </div>
+        <section class="mine-engagement-summary" aria-label="我的作品互动汇总">
+          <article><strong>${mine.length}</strong><span>我的作品</span></article>
+          <article><strong>${totalLikes}</strong><span>收到点赞</span></article>
+          <article><strong>${totalFavorites}</strong><span>收到收藏</span></article>
+          <article><strong>${totalHeat}</strong><span>综合热度</span></article>
+        </section>
+        <section class="mine-section">
+          <h3>我的作品互动</h3>
+          <div class="mine-work-metrics">${metricRows || `<p class="empty-note">暂无作品互动数据。</p>`}</div>
+        </section>
+        <section class="mine-section">
+          <h3>我的作品</h3>
+          <div class="masonry-grid">${mine.map(workCard).join("") || `<p class="empty-note">暂无作品。</p>`}</div>
+        </section>
+      `;
+    }
+    if (tab === "likes") {
+      const likedWorks = app.tables.works.filter(work => hasWorkEngagement(work.id, "like"));
+      const favoriteWorks = app.tables.works.filter(work => hasWorkEngagement(work.id, "favorite"));
+      content.innerHTML = `
+        <div class="mine-section-head">
+          <div>
+            <p class="kicker">Saved</p>
+            <h2>点赞收藏</h2>
+          </div>
+        </div>
+        <section class="mine-engagement-summary" aria-label="点赞收藏汇总">
+          <article><strong>${likedWorks.length}</strong><span>我点赞的作品</span></article>
+          <article><strong>${favoriteWorks.length}</strong><span>我收藏的作品</span></article>
+        </section>
+        <section class="mine-section">
+          <h3>我点赞的作品</h3>
+          <div class="masonry-grid">${likedWorks.map(workCard).join("") || `<p class="empty-note">还没有点赞作品。</p>`}</div>
+        </section>
+        <section class="mine-section">
+          <h3>我收藏的作品</h3>
+          <div class="masonry-grid">${favoriteWorks.map(workCard).join("") || `<p class="empty-note">还没有收藏作品。</p>`}</div>
+        </section>
+      `;
     }
     if (tab === "billing") {
       content.innerHTML = `
@@ -2717,7 +3197,7 @@ function initManagement() {
         return;
       }
       Object.assign(site, { siteName: data.siteName, announcement: data.announcement, tagline: data.tagline });
-      Object.assign(admin, { username: data.username || "admin", password: data.password || "123456" });
+      Object.assign(admin, { username: data.username || "admin", password: data.password || "admin1212" });
       app.tables.categories = normalizeCategoryNames(data.categories);
       upsertById(app.tables.settings, { id: "workCategories", categories: app.tables.categories });
       app.save();
@@ -2837,6 +3317,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     await app.initBackend();
     applySiteChrome();
     wireGlobalAuth();
+    wireWorkEngagements();
     await runners[document.body.dataset.page]?.();
   } catch (error) {
     app.toast(error.message || "页面初始化失败");

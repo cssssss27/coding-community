@@ -17,6 +17,7 @@ TABLES = [
     "users",
     "user_profiles",
     "works",
+    "work_engagements",
     "sessions",
     "admin_sessions",
     "settings",
@@ -31,10 +32,19 @@ def read_sqlite_counts(path: Path, tables: list[str]) -> dict[str, int]:
     try:
         return {
             table: int(conn.execute(f"select count(*) as n from {table}").fetchone()["n"])
+            if sqlite_table_exists(conn, table)
+            else 0
             for table in tables
         }
     finally:
         conn.close()
+
+
+def sqlite_table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return conn.execute(
+        "select name from sqlite_master where type = 'table' and name = ?",
+        (table,),
+    ).fetchone() is not None
 
 
 def sqlite_columns(conn: sqlite3.Connection, table: str) -> list[str]:
@@ -65,6 +75,9 @@ def migrate(sqlite_path: Path, replace: bool = False) -> dict[str, dict[str, int
                 for table in reversed(TABLES):
                     target.execute(f"delete from {table}")
             for table in TABLES:
+                if not sqlite_table_exists(source, table):
+                    report[table] = {"source": 0, "target": mysql_table_count(target, table)}
+                    continue
                 columns = sqlite_columns(source, table)
                 placeholders = ", ".join(["?"] * len(columns))
                 names = ", ".join(columns)
