@@ -77,6 +77,19 @@ class ManagementAuthContracts(unittest.TestCase):
         finally:
             restore_admin_auth(original)
 
+    def test_management_works_uses_responsive_record_layout(self) -> None:
+        app_js = (ROOT / "js" / "app.js").read_text(encoding="utf-8")
+        css = (ROOT / "css" / "style.css").read_text(encoding="utf-8")
+        self.assertIn("management-work-list", app_js)
+        self.assertIn("management-work-record", app_js)
+        self.assertIn("management-work-actions", app_js)
+        self.assertIn("data-work-row", app_js)
+        self.assertIn("data-save-work", app_js)
+        self.assertIn("data-delete-work", app_js)
+        self.assertNotIn("table class=\"table management-table\"", app_js)
+        self.assertIn(".management-work-record", css)
+        self.assertIn(".management-work-actions", css)
+
 
 if __name__ == "__main__":
     unittest.main()

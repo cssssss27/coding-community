@@ -51,6 +51,26 @@ OLD_DEFAULT_ADMIN_AUTHS = (
   {"username": "admin", "password": "admin"},
   {"username": "admin", "password": "123456"},
 )
+DEFAULT_SITE_NAME = "XArt Coding社区"
+OLD_DEFAULT_SITE_NAMES = {"Coding社区", "Coding 社区"}
+
+DEFAULT_UPLOAD_COPY_PROMPTS = {
+  "highlights": (
+    "你是 XArt Coding社区 的作品发布文案助手。请根据作品信息，为“功能亮点”字段生成 3 条短句。\n"
+    "要求：每行一条；不要编号、不要项目符号；每条 12-24 个中文字；只描述功能、交互或可复用价值；不要夸张营销；不要提到模型或 AI。\n"
+    "作品名称：{title}\n作品分类：{categories}\n一句话简介：{description}\n标签：{tags}"
+  ),
+  "useCases": (
+    "你是 XArt Coding社区 的作品发布文案助手。请根据作品信息，为“适用场景”字段生成 3 条短句。\n"
+    "要求：每行一条；不要编号、不要项目符号；每条 10-22 个中文字；写具体使用场景或人群；避免空泛形容词；不要提到模型或 AI。\n"
+    "作品名称：{title}\n作品分类：{categories}\n一句话简介：{description}\n标签：{tags}"
+  ),
+  "creatorNote": (
+    "你是 XArt Coding社区 的作品发布文案助手。请根据作品信息，为“作者说明”字段生成一段中文说明。\n"
+    "要求：60-100 个中文字；语气自然克制；可说明创作意图、使用建议或后续迭代方向；不要编号；不要提到模型或 AI。\n"
+    "作品名称：{title}\n作品分类：{categories}\n一句话简介：{description}\n标签：{tags}"
+  ),
+}
 
 LEGACY_CATEGORY_SLOTS = {
   "互动视觉": 0,
@@ -444,14 +464,29 @@ def sqlite_legacy_init_db() -> None:
       insert or ignore into settings(id, value_json)
       values('site', ?)
       """,
-      (json_dumps({"siteName": "Coding社区", "announcement": "", "tagline": ""}),),
+      (json_dumps({"siteName": DEFAULT_SITE_NAME, "announcement": "", "tagline": ""}),),
     )
+    site_row = conn.execute("select value_json from settings where id = 'site'").fetchone()
+    site_value = json_loads(site_row["value_json"], {}) if site_row else {}
+    if site_value.get("siteName") in OLD_DEFAULT_SITE_NAMES:
+      site_value["siteName"] = DEFAULT_SITE_NAME
+      conn.execute(
+        "update settings set value_json = ? where id = 'site'",
+        (json_dumps(site_value),),
+      )
     conn.execute(
       """
       insert or ignore into settings(id, value_json)
       values('workCategories', ?)
       """,
       (json_dumps({"categories": default_work_categories()}),),
+    )
+    conn.execute(
+      """
+      insert or ignore into settings(id, value_json)
+      values('uploadCopyPrompts', ?)
+      """,
+      (json_dumps(DEFAULT_UPLOAD_COPY_PROMPTS),),
     )
     conn.execute(
       """
@@ -647,14 +682,29 @@ def seed_default_rows(conn: Any) -> None:
     insert or ignore into settings(id, value_json)
     values('site', ?)
     """,
-    (json_dumps({"siteName": "Coding绀惧尯", "announcement": "", "tagline": ""}),),
+    (json_dumps({"siteName": DEFAULT_SITE_NAME, "announcement": "", "tagline": ""}),),
   )
+  site_row = conn.execute("select value_json from settings where id = 'site'").fetchone()
+  site_value = json_loads(site_row["value_json"], {}) if site_row else {}
+  if site_value.get("siteName") in OLD_DEFAULT_SITE_NAMES:
+    site_value["siteName"] = DEFAULT_SITE_NAME
+    conn.execute(
+      "update settings set value_json = ? where id = 'site'",
+      (json_dumps(site_value),),
+    )
   conn.execute(
     """
     insert or ignore into settings(id, value_json)
     values('workCategories', ?)
     """,
     (json_dumps({"categories": default_work_categories()}),),
+  )
+  conn.execute(
+    """
+    insert or ignore into settings(id, value_json)
+    values('uploadCopyPrompts', ?)
+    """,
+    (json_dumps(DEFAULT_UPLOAD_COPY_PROMPTS),),
   )
   conn.execute(
     """
@@ -889,6 +939,18 @@ def settings_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
   return [{"id": row["id"], **json_loads(row["value_json"], {})} for row in rows]
 
 
+def upload_copy_prompts(conn: sqlite3.Connection) -> dict[str, str]:
+  row = conn.execute("select value_json from settings where id = 'uploadCopyPrompts'").fetchone()
+  data = json_loads(row["value_json"], {}) if row else {}
+  prompts = DEFAULT_UPLOAD_COPY_PROMPTS.copy()
+  if isinstance(data, dict):
+    for key in prompts:
+      value = str(data.get(key) or "").strip()
+      if value:
+        prompts[key] = value
+  return prompts
+
+
 def active_work_categories(conn: sqlite3.Connection) -> list[str]:
   row = conn.execute("select value_json from settings where id = 'workCategories'").fetchone()
   data = json_loads(row["value_json"], {}) if row else {}
@@ -910,20 +972,34 @@ def public_works(rows: list[sqlite3.Row], active_categories: list[str], include_
       public_work._active_categories = previous  # type: ignore[attr-defined]
 
 
+def configured_api_key(row: sqlite3.Row) -> tuple[str, str]:
+  provider = str(row["provider"] or "")
+  env_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+  if env_key and "deepseek" in provider.lower():
+    return env_key, "environment"
+  return str(row["api_key"] or "").strip(), "database"
+
+
 def api_config_rows(conn: sqlite3.Connection, include_secret: bool = False) -> list[dict[str, Any]]:
   rows = conn.execute("select * from api_configs order by updated_at desc").fetchall()
-  return [
-    {
-      "id": row["id"],
-      "provider": row["provider"],
-      "baseUrl": row["base_url"],
-      "model": row["model"],
-      "apiKey": row["api_key"] if include_secret else "",
-      "enabled": bool(row["enabled"]),
-      **json_loads(row["config_json"], {}),
-    }
-    for row in rows
-  ]
+  configs = []
+  for row in rows:
+    api_key, key_source = configured_api_key(row)
+    configs.append(
+      {
+        "id": row["id"],
+        "provider": row["provider"],
+        "baseUrl": row["base_url"],
+        "model": row["model"],
+        "apiKey": row["api_key"] if include_secret else "",
+        "apiKeyConfigured": bool(api_key),
+        "apiKeySource": key_source if api_key else "",
+        "apiKeyLength": len(api_key) if api_key else 0,
+        "enabled": bool(row["enabled"]),
+        **json_loads(row["config_json"], {}),
+      }
+    )
+  return configs
 
 
 def points_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -943,7 +1019,6 @@ def point_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
 
 
 def deepseek_api_config(conn: sqlite3.Connection) -> dict[str, Any]:
-  env_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
   env_base_url = os.environ.get("DEEPSEEK_BASE_URL", "").strip()
   env_model = os.environ.get("DEEPSEEK_MODEL", "").strip()
   row = conn.execute(
@@ -954,16 +1029,161 @@ def deepseek_api_config(conn: sqlite3.Connection) -> dict[str, Any]:
     limit 1
     """
   ).fetchone()
+  if not row:
+    raise HTTPException(status_code=503, detail="模型服务尚未配置，请在后台 API 管理中填写 API Key")
   config_json = json_loads(row["config_json"], {}) if row else {}
-  api_key = env_key or (row["api_key"] if row else "")
+  api_key, _ = configured_api_key(row)
   if not api_key:
-    raise HTTPException(status_code=503, detail="DeepSeek API 尚未配置")
+    raise HTTPException(status_code=503, detail="模型服务尚未配置，请在后台 API 管理中填写 API Key")
+  if not row["enabled"]:
+    raise HTTPException(status_code=503, detail="模型服务未启用，请在后台 API 管理中启用")
+  base_url = env_base_url or str(row["base_url"] or "").strip()
+  model = env_model or str(row["model"] or "").strip()
+  if not base_url or not model:
+    raise HTTPException(status_code=503, detail="模型服务配置不完整，请检查 Base URL 和模型名称")
   return {
-    "baseUrl": env_base_url or (row["base_url"] if row and row["base_url"] else "https://api.deepseek.com"),
-    "model": env_model or (row["model"] if row and row["model"] else "deepseek-chat"),
+    "baseUrl": base_url,
+    "model": model,
     "apiKey": api_key,
     "temperature": float(config_json.get("temperature", 0.35)),
+    "enabled": bool(row["enabled"]),
   }
+
+
+def api_config_check(row: sqlite3.Row, live: bool = False) -> dict[str, Any]:
+  provider = str(row["provider"] or "DeepSeek")
+  is_deepseek = "deepseek" in provider.lower()
+  env_base_url = os.environ.get("DEEPSEEK_BASE_URL", "").strip() if is_deepseek else ""
+  env_model = os.environ.get("DEEPSEEK_MODEL", "").strip() if is_deepseek else ""
+  config_json = json_loads(row["config_json"], {})
+  api_key, key_source = configured_api_key(row)
+  base_url = env_base_url or str(row["base_url"] or "").strip()
+  model = env_model or str(row["model"] or "").strip()
+  enabled = bool(row["enabled"])
+  missing = []
+  if not enabled:
+    missing.append("未启用")
+  if not base_url:
+    missing.append("缺少 Base URL")
+  if not model:
+    missing.append("缺少模型名称")
+  if not api_key:
+    missing.append("缺少 API Key")
+  check = {
+    "ok": not missing,
+    "provider": provider,
+    "baseUrl": base_url,
+    "model": model,
+    "enabled": enabled,
+    "keyConfigured": bool(api_key),
+    "keySource": key_source if api_key else "",
+    "keyLength": len(api_key) if api_key else 0,
+    "live": bool(live),
+    "message": "配置字段完整" if not missing else "；".join(missing),
+  }
+  if live and check["ok"]:
+    live_result = probe_deepseek_connection(
+      {
+        "baseUrl": base_url,
+        "model": model,
+        "apiKey": api_key,
+        "temperature": float(config_json.get("temperature", 0.35)),
+      }
+    )
+    check.update(live_result)
+  return check
+
+
+def probe_deepseek_connection(config: dict[str, Any]) -> dict[str, Any]:
+  body = {
+    "model": config["model"],
+    "messages": [{"role": "user", "content": "ping"}],
+    "temperature": 0,
+    "max_tokens": 8,
+  }
+  request = urllib.request.Request(
+    f"{str(config['baseUrl']).rstrip('/')}/chat/completions",
+    data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+    headers={
+      "Authorization": f"Bearer {config['apiKey']}",
+      "Content-Type": "application/json",
+    },
+    method="POST",
+  )
+  try:
+    with urllib.request.urlopen(request, timeout=20) as response:
+      payload = json.loads(response.read().decode("utf-8"))
+  except urllib.error.HTTPError as exc:
+    detail_map = {
+      401: "模型服务授权无效，请检查后台 API Key",
+      402: "模型服务余额不足或计费未开通",
+      429: "模型服务请求过于频繁，请稍后再试",
+    }
+    return {"ok": False, "statusCode": exc.code, "message": detail_map.get(exc.code, f"模型服务请求失败（{exc.code}）")}
+  except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+    return {"ok": False, "statusCode": 0, "message": f"模型服务暂时不可用：{exc.__class__.__name__}"}
+  content = payload.get("choices", [{}])[0].get("message", {}).get("content", "")
+  if not content:
+    return {"ok": False, "statusCode": 502, "message": "模型服务已响应，但没有返回可用内容"}
+  return {"ok": True, "statusCode": 200, "message": "模型服务连接正常"}
+
+
+def call_deepseek_text(config: dict[str, Any], system_prompt: str, user_prompt: str, max_tokens: int = 512) -> str:
+  body = {
+    "model": config["model"],
+    "messages": [
+      {"role": "system", "content": system_prompt},
+      {"role": "user", "content": user_prompt},
+    ],
+    "temperature": max(0, min(2, float(config.get("temperature", 0.35)))),
+    "max_tokens": max(64, min(2048, int(max_tokens))),
+  }
+  request = urllib.request.Request(
+    f"{str(config['baseUrl']).rstrip('/')}/chat/completions",
+    data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+    headers={
+      "Authorization": f"Bearer {config['apiKey']}",
+      "Content-Type": "application/json",
+    },
+    method="POST",
+  )
+  try:
+    with urllib.request.urlopen(request, timeout=45) as response:
+      payload = json.loads(response.read().decode("utf-8"))
+  except urllib.error.HTTPError as exc:
+    detail_map = {
+      401: "模型服务授权无效，请检查后台 API Key",
+      402: "模型服务余额不足或计费未开通",
+      429: "模型服务请求过于频繁，请稍后再试",
+    }
+    detail = detail_map.get(exc.code, f"模型服务请求失败（{exc.code}）")
+    raise HTTPException(status_code=502, detail=detail) from exc
+  except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+    raise HTTPException(status_code=502, detail="模型服务暂时不可用") from exc
+  content = payload.get("choices", [{}])[0].get("message", {}).get("content", "")
+  if not content:
+    raise HTTPException(status_code=502, detail="模型未返回可用文案")
+  return str(content).strip()
+
+
+def render_upload_copy_prompt(template: str, payload: UploadCopyGeneratePayload) -> str:
+  replacements = {
+    "{title}": payload.title.strip() or "未命名作品",
+    "{categories}": "、".join(normalize_category_names(payload.categories)) or "未选择",
+    "{description}": payload.description.strip(),
+    "{tags}": "、".join(parsed_tags(payload.tags)) or payload.tags.strip(),
+  }
+  rendered = str(template or "")
+  for placeholder, value in replacements.items():
+    rendered = rendered.replace(placeholder, value)
+  return rendered
+
+
+def normalize_upload_copy_result(target: str, content: str) -> str:
+  if target in {"highlights", "useCases"}:
+    lines = cleaned_generated_lines(content, limit=5)
+    return "\n".join(lines[:3] or [content.strip()])
+  return re.sub(r"\s+", " ", strip_markdown_fence(content)).strip()[:500]
 
 
 def strip_markdown_fence(text: str) -> str:
@@ -1004,7 +1224,7 @@ def parse_vibe_model_response(content: str) -> tuple[str, str]:
 
 def call_deepseek_vibe(current_html: str, prompt: str, messages: list[dict[str, str]], config: dict[str, Any]) -> tuple[str, str]:
   system_prompt = (
-    "你是 Coding社区 的 HTML 小程序二次开发助手。"
+    "你是 XArt Coding社区 的 HTML 小程序二次开发助手。"
     "你会收到当前作品的完整 HTML 源码和用户的修改指令。"
     "只修改 HTML/CSS/JS，返回一个可以直接运行的完整 HTML 文档。"
     "不要读取图片文件内容，不要要求用户上传图片，不要向用户解释或泄露源码。"
@@ -1154,6 +1374,17 @@ def parsed_lines(value: Any) -> list[str]:
   return [item.strip() for item in str(value or "").splitlines() if item.strip()][:8]
 
 
+def cleaned_generated_lines(value: str, limit: int = 5) -> list[str]:
+  lines = []
+  for raw in str(value or "").splitlines():
+    item = re.sub(r"^\s*(?:[-*•·]|\d+[\.、)]|[一二三四五六七八九十]+[、.])\s*", "", raw).strip()
+    if item:
+      lines.append(item)
+    if len(lines) >= limit:
+      break
+  return lines
+
+
 def truthy_form_value(value: Any) -> bool:
   return str(value or "").strip().lower() in {"1", "true", "yes", "y", "on", "是", "paid", "paidTrial"}
 
@@ -1293,6 +1524,24 @@ class AdminApiConfigPayload(BaseModel):
   enabled: bool = False
 
 
+class AdminApiConfigCheckPayload(BaseModel):
+  live: bool = False
+
+
+class UploadCopyPromptPayload(BaseModel):
+  highlights: str = DEFAULT_UPLOAD_COPY_PROMPTS["highlights"]
+  useCases: str = DEFAULT_UPLOAD_COPY_PROMPTS["useCases"]
+  creatorNote: str = DEFAULT_UPLOAD_COPY_PROMPTS["creatorNote"]
+
+
+class UploadCopyGeneratePayload(BaseModel):
+  target: str
+  title: str = ""
+  categories: list[str] = []
+  description: str = ""
+  tags: str = ""
+
+
 class VibeSessionPayload(BaseModel):
   workId: str
 
@@ -1322,7 +1571,7 @@ class AdminPointPayload(BaseModel):
 
 
 class AdminSettingsPayload(BaseModel):
-  siteName: str = "Coding社区"
+  siteName: str = DEFAULT_SITE_NAME
   announcement: str = ""
   tagline: str = ""
   username: str = "admin"
@@ -1330,7 +1579,7 @@ class AdminSettingsPayload(BaseModel):
   categories: list[str] = []
 
 
-app = FastAPI(title="Coding社区 API", version="0.1.0")
+app = FastAPI(title="XArt Coding社区 API", version="0.1.0")
 app.add_middleware(
   CORSMiddleware,
   allow_origins=["*"],
@@ -1338,6 +1587,13 @@ app.add_middleware(
   allow_methods=["*"],
   allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def media_permissions_policy(request: Request, call_next):
+  response = await call_next(request)
+  response.headers["Permissions-Policy"] = "camera=(self), microphone=(self), fullscreen=(self), autoplay=(self), clipboard-read=(self), clipboard-write=(self)"
+  return response
 
 
 @app.on_event("startup")
@@ -1477,7 +1733,7 @@ def provider_login(payload: ProviderPayload) -> dict[str, Any]:
           f"{label} 用户",
           "images/avatars/avatar-deer.png" if provider == "github" else "images/avatars/avatar-dog.png",
           hash_password(secrets.token_urlsafe(16)),
-          json_dumps({"signature": "通过第三方账号快速加入 Coding社区。", "field": "创意组件"}),
+          json_dumps({"signature": "通过第三方账号快速加入 XArt Coding社区。", "field": "创意组件"}),
           provider,
           now_text(),
           now_text(),
@@ -1495,7 +1751,7 @@ def provider_login(payload: ProviderPayload) -> dict[str, Any]:
         (
           user_id,
           "images/avatars/avatar-deer.png" if provider == "github" else "images/avatars/avatar-dog.png",
-          "通过第三方账号快速加入 Coding社区。",
+          "通过第三方账号快速加入 XArt Coding社区。",
           "创意组件",
           "个人创作者",
           now_text(),
@@ -1508,6 +1764,24 @@ def provider_login(payload: ProviderPayload) -> dict[str, Any]:
 @app.get("/api/me")
 def me(user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
   return {"user": user}
+
+
+@app.post("/api/ai/upload-copy")
+def generate_upload_copy(payload: UploadCopyGeneratePayload, user: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
+  target = payload.target.strip()
+  if target not in {"highlights", "useCases", "creatorNote"}:
+    raise HTTPException(status_code=400, detail="不支持的生成字段")
+  if not payload.description.strip():
+    raise HTTPException(status_code=400, detail="请先填写一句话简介")
+  if not parsed_tags(payload.tags):
+    raise HTTPException(status_code=400, detail="请先填写标签")
+  with db() as conn:
+    config = deepseek_api_config(conn)
+    prompts = upload_copy_prompts(conn)
+  system_prompt = "你是 XArt Coding社区 的作品发布文案助手，只返回可直接填入表单的中文文案。"
+  user_prompt = render_upload_copy_prompt(prompts[target], payload)
+  text = call_deepseek_text(config, system_prompt, user_prompt, max_tokens=512)
+  return {"target": target, "text": normalize_upload_copy_result(target, text)}
 
 
 @app.put("/api/me/profile")
@@ -2068,6 +2342,10 @@ def admin_update_api_config(config_id: str, payload: AdminApiConfigPayload, admi
     "temperature": max(0, min(2, float(payload.temperature))),
   }
   with db() as conn:
+    existing = conn.execute("select api_key from api_configs where id = ?", (config_id,)).fetchone()
+    api_key = payload.apiKey.strip()
+    if not api_key and existing:
+      api_key = str(existing["api_key"] or "")
     conn.execute(
       """
       insert into api_configs(id, provider, base_url, model, api_key, enabled, config_json, updated_at)
@@ -2086,17 +2364,46 @@ def admin_update_api_config(config_id: str, payload: AdminApiConfigPayload, admi
         payload.provider.strip() or "DeepSeek",
         payload.baseUrl.strip(),
         payload.model.strip(),
-        payload.apiKey,
+        api_key,
         1 if payload.enabled else 0,
         json_dumps(config_json),
         now_text(),
       ),
     )
     row = conn.execute("select * from api_configs where id = ?", (config_id,)).fetchone()
+    configs = api_config_rows(conn)
+    api_config = next((item for item in configs if item["id"] == config_id), None)
     return {
-      "apiConfig": api_config_rows(conn, include_secret=True)[0] if row else None,
-      "apiConfigs": api_config_rows(conn, include_secret=True),
+      "apiConfig": api_config if row else None,
+      "apiConfigs": configs,
     }
+
+
+@app.post("/api/admin/api-configs/{config_id}/check")
+def admin_check_api_config(config_id: str, payload: AdminApiConfigCheckPayload, admin: dict[str, Any] = Depends(current_admin)) -> dict[str, Any]:
+  with db() as conn:
+    row = conn.execute("select * from api_configs where id = ?", (config_id,)).fetchone()
+    if not row:
+      raise HTTPException(status_code=404, detail="API 配置不存在")
+    return {"check": api_config_check(row, live=payload.live)}
+
+
+@app.put("/api/admin/upload-copy-prompts")
+def admin_update_upload_copy_prompts(payload: UploadCopyPromptPayload, admin: dict[str, Any] = Depends(current_admin)) -> dict[str, Any]:
+  prompts = {
+    "highlights": payload.highlights.strip() or DEFAULT_UPLOAD_COPY_PROMPTS["highlights"],
+    "useCases": payload.useCases.strip() or DEFAULT_UPLOAD_COPY_PROMPTS["useCases"],
+    "creatorNote": payload.creatorNote.strip() or DEFAULT_UPLOAD_COPY_PROMPTS["creatorNote"],
+  }
+  with db() as conn:
+    conn.execute(
+      """
+      insert into settings(id, value_json) values('uploadCopyPrompts', ?)
+      on conflict(id) do update set value_json = excluded.value_json
+      """,
+      (json_dumps(prompts),),
+    )
+    return {"prompts": prompts, "settings": settings_rows(conn)}
 
 
 @app.post("/api/admin/points-records")
@@ -2135,7 +2442,7 @@ def admin_create_point_record(payload: AdminPointPayload, admin: dict[str, Any] 
 @app.put("/api/admin/settings")
 def admin_update_settings(payload: AdminSettingsPayload, admin: dict[str, Any] = Depends(current_admin)) -> dict[str, Any]:
   site = {
-    "siteName": payload.siteName.strip() or "Coding社区",
+    "siteName": payload.siteName.strip() or DEFAULT_SITE_NAME,
     "announcement": payload.announcement.strip(),
     "tagline": payload.tagline.strip(),
   }

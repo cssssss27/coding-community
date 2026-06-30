@@ -65,6 +65,26 @@ class ImageLoadingContracts(unittest.TestCase):
         self.assertIn("trialModal.classList.remove(\"is-loading\")", app_js)
         self.assertNotIn("app.writeFrame(trialFrame, work.html)", app_js)
 
+    def test_trial_and_vibe_iframes_allow_camera_and_microphone(self) -> None:
+        work_html = (ROOT / "work.html").read_text(encoding="utf-8")
+        vibe_html = (ROOT / "vibe.html").read_text(encoding="utf-8")
+        app_js = (ROOT / "js" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('allow="camera; microphone', work_html)
+        self.assertIn('allowfullscreen', work_html)
+        self.assertIn('allow="camera; microphone', vibe_html)
+        self.assertIn("allow-same-origin", vibe_html)
+        self.assertIn("allow-popups", vibe_html)
+        self.assertIn("allow-top-navigation-by-user-activation", vibe_html)
+        self.assertIn("grantPreviewFramePermissions", app_js)
+        self.assertIn("sandboxTokens.add", app_js)
+
+    def test_preview_endpoint_allows_same_origin_media_permissions(self) -> None:
+        with TestClient(server.app) as client:
+            response = client.get("/api/works/new-wave-flower-stage/preview")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("camera=(self)", response.headers.get("permissions-policy", ""))
+        self.assertIn("microphone=(self)", response.headers.get("permissions-policy", ""))
+
     def test_trial_modal_can_expand_to_fullscreen_and_return(self) -> None:
         work_html = (ROOT / "work.html").read_text(encoding="utf-8")
         app_js = (ROOT / "js" / "app.js").read_text(encoding="utf-8")

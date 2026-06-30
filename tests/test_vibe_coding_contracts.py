@@ -39,6 +39,14 @@ def auth_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def admin_headers() -> dict[str, str]:
+    server.init_db()
+    with TestClient(server.app) as client:
+        response = client.post("/api/admin/login", json={"username": "admin", "password": "admin1212"})
+    assert response.status_code == 200
+    return {"X-Admin-Token": response.json()["token"]}
+
+
 class VibeCodingContracts(unittest.TestCase):
     def test_bootstrap_does_not_expose_deepseek_api_key(self) -> None:
         server.init_db()
@@ -112,6 +120,125 @@ class VibeCodingContracts(unittest.TestCase):
         self.assertIn("createModelProgressMessage", app_js)
         self.assertIn(".vibe-progress", css)
         self.assertNotIn("<span>AI</span>", app_js)
+
+    def test_frontend_network_errors_are_actionable(self) -> None:
+        app_js = (ROOT / "js" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("formatApiConnectionError", app_js)
+        self.assertIn("无法连接 API 服务", app_js)
+        self.assertIn("/api/health", app_js)
+        self.assertIn("http://127.0.0.1:8010/", app_js)
+        self.assertIn("isLocalPage", app_js)
+        self.assertIn("fromApiResponse", app_js)
+
+    def test_admin_api_config_empty_key_preserves_existing_secret(self) -> None:
+        server.init_db()
+        with server.db() as conn:
+            original = conn.execute(
+                """
+                select provider, base_url, model, api_key, enabled, config_json, updated_at
+                from api_configs
+                where id = 'deepseek-default'
+                """
+            ).fetchone()
+            conn.execute(
+                """
+                update api_configs
+                set api_key = ?, enabled = 1, updated_at = ?
+                where id = 'deepseek-default'
+                """,
+                ("secret-contract-key", server.now_text()),
+            )
+        try:
+            with TestClient(server.app) as client:
+                response = client.put(
+                    "/api/admin/api-configs/deepseek-default",
+                    json={
+                        "provider": "DeepSeek",
+                        "baseUrl": "https://api.deepseek.com",
+                        "model": "deepseek-v4-pro",
+                        "apiKey": "",
+                        "enabled": True,
+                        "temperature": 0.35,
+                    },
+                    headers=admin_headers(),
+                )
+            self.assertEqual(response.status_code, 200)
+            self.assertNotIn("secret-contract-key", response.text)
+            self.assertTrue(response.json()["apiConfig"]["apiKeyConfigured"])
+            with server.db() as conn:
+                key = conn.execute("select api_key from api_configs where id = 'deepseek-default'").fetchone()["api_key"]
+            self.assertEqual(key, "secret-contract-key")
+        finally:
+            if original:
+                with server.db() as conn:
+                    conn.execute(
+                        """
+                        update api_configs
+                        set provider = ?, base_url = ?, model = ?, api_key = ?, enabled = ?, config_json = ?, updated_at = ?
+                        where id = 'deepseek-default'
+                        """,
+                        (
+                            original["provider"],
+                            original["base_url"],
+                            original["model"],
+                            original["api_key"],
+                            original["enabled"],
+                            original["config_json"],
+                            original["updated_at"],
+                        ),
+                    )
+
+    def test_admin_api_config_check_hides_secret_and_reports_readiness(self) -> None:
+        server.init_db()
+        with server.db() as conn:
+            original = conn.execute(
+                """
+                select provider, base_url, model, api_key, enabled, config_json, updated_at
+                from api_configs
+                where id = 'deepseek-default'
+                """
+            ).fetchone()
+            conn.execute(
+                """
+                update api_configs
+                set api_key = ?, enabled = 1, updated_at = ?
+                where id = 'deepseek-default'
+                """,
+                ("secret-contract-key", server.now_text()),
+            )
+        try:
+            with TestClient(server.app) as client:
+                response = client.post(
+                    "/api/admin/api-configs/deepseek-default/check",
+                    json={"live": False},
+                    headers=admin_headers(),
+                )
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()["check"]
+            self.assertTrue(payload["ok"])
+            self.assertTrue(payload["keyConfigured"])
+            self.assertEqual(payload["keyLength"], len("secret-contract-key"))
+            self.assertNotIn("secret-contract-key", response.text)
+            self.assertNotIn("apiKey", payload)
+        finally:
+            if original:
+                with server.db() as conn:
+                    conn.execute(
+                        """
+                        update api_configs
+                        set provider = ?, base_url = ?, model = ?, api_key = ?, enabled = ?, config_json = ?, updated_at = ?
+                        where id = 'deepseek-default'
+                        """,
+                        (
+                            original["provider"],
+                            original["base_url"],
+                            original["model"],
+                            original["api_key"],
+                            original["enabled"],
+                            original["config_json"],
+                            original["updated_at"],
+                        ),
+                    )
 
     def test_vibe_prompt_enter_submits_and_shift_enter_keeps_newline(self) -> None:
         app_js = (ROOT / "js" / "app.js").read_text(encoding="utf-8")

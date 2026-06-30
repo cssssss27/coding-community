@@ -39,6 +39,20 @@ const db = {
 
 const authSessionVersionKey = "codingCommunityAuthVersion";
 
+function formatApiConnectionError(base, error) {
+  const message = String(error?.message || "");
+  const isNetworkError =
+    error instanceof TypeError ||
+    /Failed to fetch|NetworkError|Load failed|ERR_CONNECTION_REFUSED/i.test(message);
+  if (!isNetworkError) return error instanceof Error ? error : new Error(message || "服务器请求失败");
+  const target = base || window.location.origin || "当前页面同源服务";
+  const isLocalTarget = /^(https?:\/\/)?(127\.0\.0\.1|localhost)(:\d+)?/i.test(target);
+  const hint = isLocalTarget
+    ? "请确认已经启动 Start_Coding社区_服务器.bat，并使用 http://127.0.0.1:8010/ 访问网站。"
+    : "请检查云端 /api/health、后端进程、反向代理超时和服务器到模型服务的出站网络。";
+  return new Error(`无法连接 API 服务。${hint}当前请求目标：${target}`);
+}
+
 const serverApi = {
   base: window.CC_API_BASE || "",
   localBase: window.CC_LOCAL_API_BASE || "http://127.0.0.1:8010",
@@ -67,9 +81,10 @@ const serverApi = {
   },
   candidateBases() {
     const bases = [];
+    const isLocalPage = ["localhost", "127.0.0.1", ""].includes(location.hostname);
     if (this.base) bases.push(this.base);
     if (location.protocol === "http:" || location.protocol === "https:") bases.push("");
-    if (this.localBase) bases.push(this.localBase);
+    if (this.localBase && (isLocalPage || location.protocol === "file:")) bases.push(this.localBase);
     return [...new Set(bases.map(base => String(base || "").replace(/\/$/, "")))];
   },
   async request(path, options = {}) {
@@ -83,16 +98,20 @@ const serverApi = {
         const response = await fetch(`${base}${path}`, { ...options, headers });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) {
+          const apiError = new Error(payload.detail || "服务器请求失败");
+          apiError.status = response.status;
+          apiError.fromApiResponse = true;
           if (response.status === 404 && base !== bases[bases.length - 1]) {
-            lastError = new Error(payload.detail || "服务器请求失败");
+            lastError = apiError;
             continue;
           }
-          throw new Error(payload.detail || "服务器请求失败");
+          throw apiError;
         }
         if (base && base === this.localBase) this.base = base;
         return payload;
       } catch (error) {
-        lastError = error;
+        if (error?.fromApiResponse) throw error;
+        lastError = formatApiConnectionError(base, error);
       }
     }
     throw lastError || new Error("服务器请求失败");
@@ -221,6 +240,27 @@ const serverApi = {
       body: JSON.stringify(data)
     });
   },
+  checkAdminApiConfig(id, data = {}) {
+    return this.request(`/api/admin/api-configs/${encodeURIComponent(id)}/check`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": this.adminToken },
+      body: JSON.stringify(data)
+    });
+  },
+  updateUploadCopyPrompts(data) {
+    return this.request("/api/admin/upload-copy-prompts", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-Admin-Token": this.adminToken },
+      body: JSON.stringify(data)
+    });
+  },
+  generateUploadCopy(data) {
+    return this.request("/api/ai/upload-copy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data)
+    });
+  },
   createAdminPointRecord(data) {
     return this.request("/api/admin/points-records", {
       method: "POST",
@@ -292,6 +332,9 @@ const app = {
   },
   adminAuth() {
     return this.tables.settings.find(row => row.id === "adminAuth") || { username: "admin", password: "admin1212" };
+  },
+  uploadCopyPrompts() {
+    return this.tables.settings.find(row => row.id === "uploadCopyPrompts") || {};
   },
   isLoggedIn() {
     const id = localStorage.getItem("codingCommunityCurrentUser");
@@ -704,7 +747,28 @@ function vibePreviewUrl(session) {
   return url ? `${serverApi.base}${url}` : "about:blank";
 }
 
+function grantPreviewFramePermissions(frame) {
+  if (!frame) return;
+  frame.setAttribute("allow", "camera; microphone; fullscreen; autoplay; clipboard-read; clipboard-write");
+  frame.setAttribute("allowfullscreen", "");
+  if (frame.hasAttribute("sandbox")) {
+    const sandboxTokens = new Set(String(frame.getAttribute("sandbox") || "").split(/\s+/).filter(Boolean));
+    [
+      "allow-scripts",
+      "allow-forms",
+      "allow-same-origin",
+      "allow-pointer-lock",
+      "allow-modals",
+      "allow-downloads",
+      "allow-popups",
+      "allow-top-navigation-by-user-activation"
+    ].forEach(token => sandboxTokens.add(token));
+    frame.setAttribute("sandbox", Array.from(sandboxTokens).join(" "));
+  }
+}
+
 function loadStaticPreviewFallback(frame, html) {
+  grantPreviewFramePermissions(frame);
   app.writeFrame(frame, html);
 }
 
@@ -761,6 +825,12 @@ function validateWorkSubmissionForm(form, { requireProgramFile = false } = {}) {
   }
   return true;
 }
+
+const uploadCopyTargetLabels = {
+  highlights: "功能亮点",
+  useCases: "适用场景",
+  creatorNote: "作者说明"
+};
 
 function appendSelectedCategories(data, scope) {
   data.delete("categories");
@@ -1275,7 +1345,7 @@ async function loginOrRegister(data) {
       }
       const payload = data.mode === "login" ? await serverApi.login(data) : await serverApi.register(data);
       const user = applyAuthPayload(payload);
-      app.toast(data.mode === "login" ? `${user.name}，欢迎回来` : `${user.name}，欢迎加入 Coding社区`);
+      app.toast(data.mode === "login" ? `${user.name}，欢迎回来` : `${user.name}，欢迎加入 XArt Coding社区`);
       return user;
     } catch (error) {
       app.toast(error.message || "服务器登录失败");
@@ -1332,7 +1402,7 @@ async function loginOrRegister(data) {
   app.tables.users.push(user);
   app.save();
   app.setCurrentUser(user.id);
-  app.toast(`${user.name}，欢迎加入 Coding社区`);
+  app.toast(`${user.name}，欢迎加入 XArt Coding社区`);
   return user;
 }
 
@@ -1371,7 +1441,7 @@ async function loginWithProvider(providerId) {
       github: provider.id === "github" ? "github-user" : "",
       weibo: provider.id === "weibo" ? "weibo_user" : "",
       bio: "",
-      signature: "通过第三方账号快速加入 Coding社区。",
+      signature: "通过第三方账号快速加入 XArt Coding社区。",
       skills: [],
       interests: [],
       language: "zh-CN",
@@ -1409,7 +1479,7 @@ function authModalMarkup() {
         <button class="modal-close" type="button" data-close-auth>关闭</button>
         <div class="auth-copy">
           <p class="kicker">Account</p>
-          <h2>进入 Coding社区</h2>
+          <h2>进入 XArt Coding社区</h2>
           <p>登录后可以管理作品、充值点数，并保存 vibe coding 改版。</p>
         </div>
         <div class="auth-tabs">
@@ -1548,12 +1618,12 @@ function currentPageTarget() {
 }
 
 function applySiteChrome() {
-  const siteName = app.site().siteName || "Coding\u793e\u533a";
+  const siteName = app.site().siteName || "XArt Coding社区";
   document.querySelectorAll(".brand-name").forEach(node => {
     node.textContent = siteName;
   });
   if (document.title) {
-    document.title = document.title.replace(/^Coding\s*\u793e\u533a|^Coding\u793e\u533a/, siteName);
+    document.title = document.title.replace(/^(?:XArt\s+)?Coding\s*\u793e\u533a|^Coding\u793e\u533a/, siteName);
   }
 }
 
@@ -1793,6 +1863,65 @@ function initUpload() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   });
 
+  async function handleAiCopyGenerate(event) {
+    const button = event.currentTarget;
+    const target = button.dataset.aiCopyTarget;
+    const targetField = form.elements[target];
+    if (!target || !targetField) return;
+    if (!app.isLoggedIn()) {
+      openAuthModal({ mode: "login", afterLogin: currentPageTarget() });
+      return;
+    }
+    const data = new FormData(form);
+    const description = String(data.get("description") || "").trim();
+    const tags = String(data.get("tags") || "").trim();
+    if (!description) {
+      app.toast("请先填写一句话简介", "error");
+      form.elements.description?.focus();
+      return;
+    }
+    if (!splitTags(tags).length) {
+      app.toast("请先填写标签", "error");
+      form.elements.tags?.focus();
+      return;
+    }
+    const backendReady = await app.ensureBackendReady();
+    if (!backendReady) {
+      app.toast("AI 生成需要连接 FastAPI 服务", "error");
+      return;
+    }
+    if (!serverApi.token) {
+      app.toast("请重新登录后使用 AI 生成", "error");
+      openAuthModal({ mode: "login", afterLogin: currentPageTarget() });
+      return;
+    }
+    const originalHtml = button.innerHTML;
+    button.disabled = true;
+    button.innerHTML = `<span aria-hidden="true">✦</span><span>生成中</span>`;
+    try {
+      const payload = await serverApi.generateUploadCopy({
+        target,
+        title: String(data.get("title") || ""),
+        categories: selectedCategoriesFrom(form),
+        description,
+        tags
+      });
+      targetField.value = payload.text || "";
+      targetField.dispatchEvent(new Event("input", { bubbles: true }));
+      renderSummary();
+      app.toast(`${uploadCopyTargetLabels[target] || "文案"}已生成`, "success");
+    } catch (error) {
+      app.toast(error.message || "AI 生成失败", "error");
+    } finally {
+      button.disabled = false;
+      button.innerHTML = originalHtml || `<span aria-hidden="true">✦</span><span>AI生成</span>`;
+    }
+  }
+
+  form.querySelectorAll("[data-ai-copy-target]").forEach(button => {
+    button.addEventListener("click", handleAiCopyGenerate);
+  });
+
   form.addEventListener("submit", async event => {
     event.preventDefault();
     if (!app.isLoggedIn()) {
@@ -1840,7 +1969,7 @@ async function initWork() {
   const lineage = derivativeLabel(work);
   const paidWork = isPaidWork(work);
   const access = workAccessState(work);
-  document.title = `${work.title} - Coding 社区`;
+  document.title = `${work.title} - XArt Coding社区`;
   document.getElementById("work-title").textContent = work.title;
   document.getElementById("work-image").src = work.image;
   document.getElementById("work-image").alt = work.title;
@@ -1966,6 +2095,7 @@ async function initWork() {
   };
   trialTitle.textContent = "\u8bd5\u7528\u7a0b\u5e8f\uff1a" + work.title;
   trialMeta.textContent = `${workPrimaryCategory(work)} · ${work.author || "未知作者"} · ${access.copy}`;
+  grantPreviewFramePermissions(trialFrame);
   trialFullscreenToggle.addEventListener("click", () => {
     setTrialFullscreen(!trialModal.classList.contains("is-fullscreen"));
   });
@@ -1979,6 +2109,7 @@ async function initWork() {
     }, { once: true });
     if (app.serverReady) {
       trialFrame.removeAttribute("srcdoc");
+      grantPreviewFramePermissions(trialFrame);
       trialFrame.src = workPreviewUrl(work.id);
     } else {
       trialFrame.removeAttribute("src");
@@ -2001,6 +2132,7 @@ async function initVibe() {
   const saveButton = document.getElementById("save-variant");
   const refreshButton = document.getElementById("refresh-preview");
   let activeSession = null;
+  grantPreviewFramePermissions(preview);
 
   const setStatus = text => {
     status.textContent = text;
@@ -2451,6 +2583,7 @@ function initAdmin() {
     }
     if (tab === "ai") {
       const api = app.tables.apiConfigs[0];
+      const apiKeyPlaceholder = api.apiKeyConfigured ? "已保存 API Key，留空则保持不变" : "API Key";
       content.innerHTML = `
         <h2>API 接入表</h2>
         <p>DeepSeek 配置保存在 apiConfigs 表。真实上线时应由服务器读取 key 并代理请求。</p>
@@ -2458,14 +2591,17 @@ function initAdmin() {
           <input class="field" name="provider" value="${escapeHtml(api.provider)}">
           <input class="field" name="model" value="${escapeHtml(api.model)}">
           <input class="field full" name="baseUrl" value="${escapeHtml(api.baseUrl)}">
-          <input class="field full" name="apiKey" value="${escapeHtml(api.apiKey)}" placeholder="API Key">
+          <input class="field full" name="apiKey" value="" placeholder="${escapeHtml(apiKeyPlaceholder)}" autocomplete="off">
+          <p class="form-help full">${api.apiKeyConfigured ? `服务器已保存 API Key（${escapeHtml(api.apiKeySource || "database")}，${Number(api.apiKeyLength || 0)} 位）；留空不会覆盖。` : "尚未保存 API Key。"}</p>
           <input class="field" name="temperature" type="number" step="0.05" value="${Number(api.temperature)}">
           <button class="nav-button solid" type="submit">保存</button>
         </form>
       `;
       document.getElementById("api-form").addEventListener("submit", event => {
         event.preventDefault();
-        Object.assign(api, Object.fromEntries(new FormData(event.currentTarget).entries()));
+        const data = Object.fromEntries(new FormData(event.currentTarget).entries());
+        if (!String(data.apiKey || "").trim() && api.apiKey) delete data.apiKey;
+        Object.assign(api, data);
         app.save();
         app.toast("apiConfigs 表已更新");
       });
@@ -2921,31 +3057,118 @@ function initManagement() {
   }
 
   function renderWorks() {
+    const statusLabel = status => ({
+      published: "已发布",
+      reviewing: "审核中",
+      hidden: "已隐藏"
+    })[status] || "已发布";
     content.innerHTML = `
       <div class="management-head"><div><p class="kicker">Works</p><h1>作品管理</h1><p>维护作品标题、分类、作者、精选状态和发布状态；服务器模式下会直接同步 works 数据表。</p></div></div>
-      <section class="management-card">
-        <table class="table management-table"><thead><tr><th>封面</th><th>作品</th><th>分类</th><th>作者</th><th>点数</th><th>热度</th><th>精选</th><th>状态</th><th>操作</th></tr></thead><tbody>
-          ${app.tables.works.map(work => `
-            <tr data-work-row="${escapeHtml(work.id)}">
-              <td><img class="management-thumb" src="${escapeHtml(work.image)}" alt=""></td>
-              <td><input class="field compact-cell" name="title" value="${escapeHtml(work.title)}"><small>${escapeHtml(work.id)}</small></td>
-              <td><div class="management-category-grid">${renderCategorySelects(workCategories(work), { requiredFirst: true })}</div></td>
-              <td><input class="field compact-cell" name="author" value="${escapeHtml(work.author)}"></td>
-              <td><input class="field compact-cell" name="points" type="number" value="${Number(work.points || 0)}"></td>
-              <td><span class="management-heat">${workPopularity(work)}</span><small>系统统计</small></td>
-              <td><input type="checkbox" name="featured" ${work.featured ? "checked" : ""}></td>
-              <td>
-                <select class="field compact-cell" name="status">
-                  <option value="published" ${work.status === "published" ? "selected" : ""}>已发布</option>
-                  <option value="reviewing" ${work.status === "reviewing" ? "selected" : ""}>审核中</option>
-                  <option value="hidden" ${work.status === "hidden" ? "selected" : ""}>已隐藏</option>
-                </select>
-              </td>
-              <td><button class="nav-button" data-save-work="${escapeHtml(work.id)}">保存</button><button class="nav-button" data-delete-work="${escapeHtml(work.id)}">删除</button></td>
-            </tr>`).join("")}
-        </tbody></table>
+      <section class="management-card management-works-card">
+        <div class="management-work-toolbar">
+          <label>
+            <span>搜索作品</span>
+            <input class="field" type="search" id="management-work-search" placeholder="输入作品名、作者、ID、标签">
+          </label>
+          <label>
+            <span>状态筛选</span>
+            <select class="field" id="management-work-status-filter">
+              <option value="all">全部状态</option>
+              <option value="published">已发布</option>
+              <option value="reviewing">审核中</option>
+              <option value="hidden">已隐藏</option>
+            </select>
+          </label>
+          <strong id="management-work-count">${app.tables.works.length} 个作品</strong>
+        </div>
+        <div class="management-work-list">
+          ${app.tables.works.map(work => {
+            const categories = workCategories(work);
+            const status = work.status || "published";
+            const searchText = [
+              work.title,
+              work.id,
+              work.author,
+              work.description,
+              ...categories,
+              ...(work.tags || [])
+            ].join(" ").toLowerCase();
+            return `
+              <article class="management-work-record" data-work-row="${escapeHtml(work.id)}" data-work-status="${escapeHtml(status)}" data-work-search="${escapeHtml(searchText)}">
+                <div class="management-work-cover">
+                  <img class="management-work-thumb" src="${escapeHtml(work.image)}" alt="">
+                  <span>${escapeHtml(statusLabel(status))}</span>
+                </div>
+                <div class="management-work-body">
+                  <div class="management-work-main">
+                    <label class="management-work-field management-work-title-field">
+                      <span>作品名称</span>
+                      <input class="field compact-cell" name="title" value="${escapeHtml(work.title)}">
+                      <small>${escapeHtml(work.id)}</small>
+                    </label>
+                    <label class="management-work-field">
+                      <span>作者</span>
+                      <input class="field compact-cell" name="author" value="${escapeHtml(work.author)}">
+                    </label>
+                    <label class="management-work-field">
+                      <span>点数</span>
+                      <input class="field compact-cell" name="points" type="number" value="${Number(work.points || 0)}">
+                    </label>
+                    <div class="management-work-field management-work-metric">
+                      <span>热度</span>
+                      <strong>${workPopularity(work)}</strong>
+                      <small>系统统计</small>
+                    </div>
+                  </div>
+                  <div class="management-work-secondary">
+                    <div class="management-work-field management-work-category-field">
+                      <span>分类</span>
+                      <div class="management-category-grid">${renderCategorySelects(categories, { requiredFirst: true })}</div>
+                    </div>
+                    <label class="management-work-field">
+                      <span>状态</span>
+                      <select class="field compact-cell" name="status">
+                        <option value="published" ${status === "published" ? "selected" : ""}>已发布</option>
+                        <option value="reviewing" ${status === "reviewing" ? "selected" : ""}>审核中</option>
+                        <option value="hidden" ${status === "hidden" ? "selected" : ""}>已隐藏</option>
+                      </select>
+                    </label>
+                    <label class="management-work-field management-work-check">
+                      <span>精选</span>
+                      <input type="checkbox" name="featured" ${work.featured ? "checked" : ""}>
+                      <small>推荐展示</small>
+                    </label>
+                  </div>
+                </div>
+                <div class="management-work-actions">
+                  <a class="nav-button" href="work.html?id=${encodeURIComponent(work.id)}" target="_blank" rel="noopener">查看</a>
+                  <button class="nav-button solid" data-save-work="${escapeHtml(work.id)}">保存</button>
+                  <button class="nav-button danger" data-delete-work="${escapeHtml(work.id)}">删除</button>
+                </div>
+              </article>
+            `;
+          }).join("")}
+        </div>
       </section>
     `;
+    const searchInput = content.querySelector("#management-work-search");
+    const statusFilter = content.querySelector("#management-work-status-filter");
+    const countNode = content.querySelector("#management-work-count");
+    const applyWorkFilters = () => {
+      const term = String(searchInput?.value || "").trim().toLowerCase();
+      const status = String(statusFilter?.value || "all");
+      let visible = 0;
+      content.querySelectorAll(".management-work-record").forEach(record => {
+        const matchesText = !term || String(record.dataset.workSearch || "").includes(term);
+        const matchesStatus = status === "all" || record.dataset.workStatus === status;
+        const show = matchesText && matchesStatus;
+        record.classList.toggle("hidden", !show);
+        if (show) visible += 1;
+      });
+      if (countNode) countNode.textContent = `${visible} / ${app.tables.works.length} 个作品`;
+    };
+    searchInput?.addEventListener("input", applyWorkFilters);
+    statusFilter?.addEventListener("change", applyWorkFilters);
     content.querySelectorAll("[data-save-work]").forEach(button => button.addEventListener("click", async () => {
       const work = app.tables.works.find(item => item.id === button.dataset.saveWork);
       const row = content.querySelector(`[data-work-row="${CSS.escape(button.dataset.saveWork)}"]`);
@@ -3054,6 +3277,11 @@ function initManagement() {
 
   function renderApi() {
     const api = apiConfig();
+    const prompts = app.uploadCopyPrompts();
+    const apiKeyPlaceholder = api.apiKeyConfigured ? "已保存 API Key，留空则保持不变" : "API Key";
+    const apiKeyState = api.apiKeyConfigured
+      ? `服务器已保存 API Key（${escapeHtml(api.apiKeySource || "database")}，${Number(api.apiKeyLength || 0)} 位）；留空不会覆盖。`
+      : "尚未保存 API Key，做同款功能无法调用模型。";
     content.innerHTML = `
       <div class="management-head"><div><p class="kicker">API</p><h1>API 管理</h1><p>默认接入 DeepSeek。服务器模式会保存到 api_configs 表，后续可由云端代理读取并调用。</p></div></div>
       <section class="management-card">
@@ -3061,11 +3289,30 @@ function initManagement() {
           <input class="field" name="provider" value="${escapeHtml(api.provider)}" placeholder="服务商">
           <input class="field" name="model" value="${escapeHtml(api.model)}" placeholder="模型">
           <input class="field full" name="baseUrl" value="${escapeHtml(api.baseUrl)}" placeholder="Base URL">
-          <input class="field full" name="apiKey" value="${escapeHtml(api.apiKey)}" placeholder="API Key">
+          <input class="field full" name="apiKey" value="" placeholder="${escapeHtml(apiKeyPlaceholder)}" autocomplete="off">
+          <p class="form-help full">${apiKeyState}</p>
           <input class="field" name="temperature" type="number" min="0" max="2" step="0.05" value="${Number(api.temperature || 0)}">
           <label class="check-line"><input type="checkbox" name="enabled" ${api.enabled ? "checked" : ""}> 启用该配置</label>
           <button class="nav-button solid" type="submit">保存 API 配置</button>
-          <button class="nav-button" type="button" id="api-local-check">本地校验</button>
+          <button class="nav-button" type="button" id="api-cloud-check">云端校验</button>
+        </form>
+      </section>
+      <section class="management-card">
+        <div class="management-head compact"><div><p class="kicker">Prompts</p><h2>上传文案提示词</h2><p>用于上传作品页生成“功能亮点”“适用场景”“作者说明”。支持变量：{title}、{categories}、{description}、{tags}。</p></div></div>
+        <form id="upload-copy-prompts-form" class="form-grid">
+          <label class="field-group full">
+            <span>功能亮点提示词</span>
+            <textarea class="field textarea" name="highlights">${escapeHtml(prompts.highlights || "")}</textarea>
+          </label>
+          <label class="field-group full">
+            <span>适用场景提示词</span>
+            <textarea class="field textarea" name="useCases">${escapeHtml(prompts.useCases || "")}</textarea>
+          </label>
+          <label class="field-group full">
+            <span>作者说明提示词</span>
+            <textarea class="field textarea" name="creatorNote">${escapeHtml(prompts.creatorNote || "")}</textarea>
+          </label>
+          <button class="nav-button solid" type="submit">保存提示词</button>
         </form>
       </section>
     `;
@@ -3076,7 +3323,7 @@ function initManagement() {
         provider: data.provider,
         model: data.model,
         baseUrl: data.baseUrl,
-        apiKey: data.apiKey,
+        apiKey: String(data.apiKey || "").trim(),
         enabled: Boolean(data.enabled),
         temperature: Number(data.temperature || 0)
       };
@@ -3096,8 +3343,44 @@ function initManagement() {
       app.save();
       app.toast("API 配置已保存");
     });
-    document.getElementById("api-local-check").addEventListener("click", () => {
-      app.toast(api.baseUrl && api.model ? "配置字段完整；真实连通性需由服务器代理测试" : "请补齐 Base URL 和模型名称");
+    document.getElementById("api-cloud-check").addEventListener("click", async () => {
+      if (app.serverReady) {
+        try {
+          const result = await serverApi.checkAdminApiConfig(api.id || "deepseek-default", { live: true });
+          const check = result.check || {};
+          app.toast(`云端校验${check.ok ? "通过" : "失败"}：${check.message || "无返回信息"}`, check.ok ? "success" : "error");
+          return;
+        } catch (error) {
+          app.toast(error.message || "云端校验失败", "error");
+          return;
+        }
+      }
+      app.toast(api.baseUrl && api.model ? "配置字段完整；请在服务器模式下进行云端校验" : "请补齐 Base URL 和模型名称");
+    });
+    document.getElementById("upload-copy-prompts-form").addEventListener("submit", async event => {
+      event.preventDefault();
+      const data = Object.fromEntries(new FormData(event.currentTarget).entries());
+      const payload = {
+        highlights: String(data.highlights || ""),
+        useCases: String(data.useCases || ""),
+        creatorNote: String(data.creatorNote || "")
+      };
+      if (app.serverReady) {
+        try {
+          const saved = await serverApi.updateUploadCopyPrompts(payload);
+          if (Array.isArray(saved.settings)) app.tables.settings = saved.settings;
+          else upsertById(app.tables.settings, { id: "uploadCopyPrompts", ...saved.prompts });
+          app.save();
+          app.toast("上传文案提示词已同步到服务器", "success");
+          render();
+        } catch (error) {
+          app.toast(error.message || "提示词保存失败", "error");
+        }
+        return;
+      }
+      upsertById(app.tables.settings, { id: "uploadCopyPrompts", ...payload });
+      app.save();
+      app.toast("上传文案提示词已保存");
     });
   }
 

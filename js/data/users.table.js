@@ -11,7 +11,7 @@ window.CC_TABLES.users = [
     role: "admin",
     accountType: "团队管理员",
     title: "系统管理员",
-    organization: "Coding社区",
+    organization: "XArt Coding社区",
     field: "平台运营",
     location: "中国 / 上海",
     website: "https://coding.local",
