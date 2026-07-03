@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1.0" />
+<title>Layered Camera Bloom System</title>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<style>
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#060715;color:white;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;user-select:none}canvas{position:fixed;inset:0;width:100vw;height:100vh;display:block;cursor:none;touch-action:none}.panel{position:fixed;left:28px;top:26px;width:min(500px,calc(100vw - 56px));padding:18px 20px;border:1px solid rgba(255,255,255,.16);border-radius:24px;background:linear-gradient(135deg,rgba(255,255,255,.12),rgba(255,255,255,.04));backdrop-filter:blur(20px);box-shadow:0 18px 60px rgba(0,0,0,.28);transition:.35s;z-index:5}.panel.hide,.tip.hide{opacity:0;transform:translateY(-14px);pointer-events:none}.tag{font-size:12px;letter-spacing:.18em;color:rgba(210,230,255,.62);text-transform:uppercase;margin-bottom:8px}h1{margin:0;font-size:clamp(24px,3vw,42px);line-height:1.05;letter-spacing:-.04em}.desc{margin:12px 0 0;color:rgba(255,255,255,.64);line-height:1.7;font-size:14px}.layers{margin-top:12px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.layer{font-size:12px;color:rgba(255,255,255,.66);border:1px solid rgba(255,255,255,.12);border-radius:14px;padding:8px 10px;background:rgba(255,255,255,.05)}.tip{position:fixed;right:28px;top:26px;padding:12px 14px;border-radius:999px;border:1px solid rgba(255,255,255,.14);background:rgba(8,10,26,.45);backdrop-filter:blur(14px);font-size:13px;color:rgba(255,255,255,.74);transition:.35s;z-index:5}.bar{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);display:flex;gap:10px;align-items:center;padding:10px;border-radius:999px;border:1px solid rgba(255,255,255,.14);background:rgba(8,10,26,.50);backdrop-filter:blur(16px);z-index:5}button{border:1px solid rgba(255,255,255,.12);color:rgba(255,255,255,.84);background:rgba(255,255,255,.08);padding:10px 14px;border-radius:999px;font:inherit;font-size:13px;cursor:pointer}button:hover,button.on{background:rgba(177,220,255,.18);border-color:rgba(185,226,255,.42)}button.primary{background:rgba(158,229,255,.18);border-color:rgba(158,229,255,.42)}#count{min-width:86px;text-align:center;color:rgba(255,255,255,.62);font-size:13px}.cameraBox{position:fixed;right:28px;bottom:92px;width:210px;aspect-ratio:16/9;border-radius:22px;overflow:hidden;border:1px solid rgba(255,255,255,.15);background:rgba(5,7,19,.42);box-shadow:0 18px 60px rgba(0,0,0,.25);z-index:4}.cameraBox::after{content:"Camera";position:absolute;left:10px;top:8px;font-size:11px;letter-spacing:.12em;color:rgba(255,255,255,.58);text-transform:uppercase}video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1);opacity:.48;filter:saturate(.78) contrast(1.08)}.status{position:fixed;left:50%;top:26px;transform:translateX(-50%);display:flex;align-items:center;gap:10px;padding:11px 15px;border:1px solid rgba(255,255,255,.14);border-radius:999px;background:rgba(8,10,26,.48);backdrop-filter:blur(16px);font-size:13px;color:rgba(255,255,255,.76);z-index:5}.dot{width:9px;height:9px;border-radius:50%;background:#8aa4c8;box-shadow:0 0 18px rgba(138,164,200,.55)}.dot.ok{background:#8ef0d1;box-shadow:0 0 18px rgba(142,240,209,.85)}.dot.fist{background:#ffd5ef;box-shadow:0 0 22px rgba(255,181,228,.95)}@media(max-width:760px){.panel{left:16px;right:16px;top:16px;width:auto}.layers{grid-template-columns:1fr}.tip{right:16px;top:auto;bottom:150px}.bar{bottom:16px;max-width:calc(100vw - 24px);overflow-x:auto}.cameraBox{right:16px;bottom:86px;width:150px}.status{top:auto;left:16px;bottom:86px;transform:none;max-width:calc(100vw - 188px)}button{white-space:nowrap}}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<section class="panel" id="panel">
+  <div class="tag">Layered Camera Bloom</div>
+  <h1>攥拳触发，分层开花</h1>
+  <p class="desc">手经过只显示追踪光标；攥紧手掌后，在手掌中心触发一次开花。花朵内部按照四层系统生成：花瓣形状、花瓣排列、开花模拟、风场扰动。</p>
+  <div class="layers">
+    <div class="layer">1 花瓣：贝塞尔曲线、脉络、卷曲</div>
+    <div class="layer">2 排列：内外双环、错位角度</div>
+    <div class="layer">3 开花：闭合到展开的时序</div>
+    <div class="layer">4 风场：全局风向影响摆动</div>
+  </div>
+</section>
+<div class="tip" id="tip">启动摄像头 · 攥紧手掌开花 · R 清屏 · S 慢动作 · W 风场可视化</div>
+<div class="status"><span class="dot" id="handDot"></span><span id="handStatus">请点击“启动摄像头”</span></div>
+<div class="cameraBox"><video id="camera" playsinline muted></video></div>
+<div class="bar"><button id="cameraBtn" class="primary">启动摄像头</button><button id="reset">清空 R</button><button id="slow">慢动作 S</button><button id="wind">显示风场 W</button><button id="mouse">鼠标调试 M</button><button id="help" class="on">说明 H</button><span id="count">0 flowers</span></div>
+<script>
+const canvas=document.getElementById('c');
+const ctx=canvas.getContext('2d');
+const panel=document.getElementById('panel');
+const tip=document.getElementById('tip');
+const countEl=document.getElementById('count');
+const slowBtn=document.getElementById('slow');
+const mouseBtn=document.getElementById('mouse');
+const windBtn=document.getElementById('wind');
+const helpBtn=document.getElementById('help');
+const cameraBtn=document.getElementById('cameraBtn');
+const video=document.getElementById('camera');
+const handStatus=document.getElementById('handStatus');
+const handDot=document.getElementById('handDot');
+
+const TAU=Math.PI*2;
+const palettes=[
+  ['#ffd3ec','#ff9fd2','#fff1a8','#91d9b6','#67cba0','#ffb7de'],
+  ['#d8f5ff','#8fdcff','#f8ffa8','#87d7c4','#5fc2a9','#9ee8ff'],
+  ['#eadcff','#b9a2ff','#fff0a6','#9bd7bd','#74c79f','#cbb8ff'],
+  ['#fff7e8','#ffd4a2','#ffe682','#a3d49a','#75bf81','#ffe1b0'],
+  ['#e9fff9','#99f0df','#fff5a5','#82d8cf','#50c4b5','#adfff0']
+];
+let W=0,H=0,DPR=1;
+let flowers=[],particles=[],stars=[],trail=[];
+let slow=false,help=true,mouseDebug=false,windDebug=false,lastFrame=performance.now();
+let cameraStarted=false,hands=null,cam=null;
+let pointer={x:0,y:0,down:false,show:false};
+let hand={x:0,y:0,show:false,isFist:false,score:0,lastSeen:0,lastBloom:0};
+
+function rand(a,b){return a+Math.random()*(b-a)}
+function clamp(v,a=0,b=1){return Math.max(a,Math.min(b,v))}
+function lerp(a,b,t){return a+(b-a)*t}
+function easeOutCubic(t){return 1-Math.pow(1-t,3)}
+function easeInOutSine(t){return -(Math.cos(Math.PI*t)-1)/2}
+function easeOutBack(t){const c1=1.70158,c3=c1+1;return 1+c3*Math.pow(t-1,3)+c1*Math.pow(t-1,2)}
+function phase(p,a,b){return clamp((p-a)/(b-a))}
+function hex(h,a){const n=parseInt(h.slice(1),16);return`rgba(${n>>16&255},${n>>8&255},${n&255},${a})`}
+function dist(a,b){return Math.hypot(a.x-b.x,a.y-b.y)}
+
+function resize(){
+  DPR=Math.max(1,Math.min(devicePixelRatio||1,2));
+  W=innerWidth;H=innerHeight;
+  canvas.width=W*DPR;canvas.height=H*DPR;
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  stars=Array.from({length:Math.floor(Math.min(130,Math.max(50,W*H/19000)))},()=>({x:Math.random()*W,y:Math.random()*H,r:rand(.5,1.8),a:rand(.04,.24),v:rand(-.018,-.07),p:Math.random()*TAU}));
+}
+
+// 第四层：风场。所有花瓣、茎叶、粒子都读取同一个风场，而不是各自动。
+class WindField{
+  constructor(){this.base=0.32;this.visualScale=26;}
+  sample(x,y,t){
+    const n1=Math.sin(x*0.006+t*0.00062)+Math.cos(y*0.0045-t*0.00048);
+    const n2=Math.sin((x+y)*0.0027+t*0.00031);
+    const angle=-0.35+n1*0.34+n2*0.18;
+    const strength=this.base+0.22*Math.sin(t*0.0008+y*0.003)+0.08*n2;
+    return {angle,strength:clamp(strength,0.05,0.72),x:Math.cos(angle)*strength,y:Math.sin(angle)*strength};
+  }
+  draw(ctx,t){
+    if(!windDebug)return;
+    ctx.save();
+    ctx.globalAlpha=.28;ctx.strokeStyle='rgba(185,230,255,.42)';ctx.lineWidth=1;
+    const gap=80;
+    for(let y=80;y<H;y+=gap){
+      for(let x=60;x<W;x+=gap){
+        const w=this.sample(x,y,t),len=this.visualScale*(.7+w.strength);
+        ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+w.x*len,y+w.y*len);ctx.stroke();
+        ctx.beginPath();ctx.arc(x+w.x*len,y+w.y*len,1.8,0,TAU);ctx.fillStyle='rgba(220,245,255,.55)';ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+}
+const windField=new WindField();
+
+class Particle{
+  constructor(x,y,pal,s=1){
+    const a=Math.random()*TAU,v=rand(.35,1.8)*s;
+    this.x=x;this.y=y;this.vx=Math.cos(a)*v;this.vy=Math.sin(a)*v-rand(.1,.9);
+    this.life=rand(1.4,3.2);this.age=0;this.r=rand(1,3.2)*s;this.col=Math.random()>.45?pal[5]:pal[2];
+  }
+  update(dt,t){
+    const w=windField.sample(this.x,this.y,t);
+    this.age+=dt;this.vx=this.vx*Math.pow(.985,dt*60)+w.x*.018*dt*60;this.vy=this.vy*Math.pow(.982,dt*60)+w.y*.014*dt*60+.014*dt*60;
+    this.x+=this.vx*dt*60;this.y+=this.vy*dt*60;
+  }
+  draw(){
+    const t=clamp(this.age/this.life),a=(1-t)*.74;
+    ctx.save();ctx.globalCompositeOperation='lighter';
+    const g=ctx.createRadialGradient(this.x,this.y,0,this.x,this.y,this.r*5);
+    g.addColorStop(0,hex(this.col,a));g.addColorStop(1,hex(this.col,0));
+    ctx.fillStyle=g;ctx.beginPath();ctx.arc(this.x,this.y,this.r*5,0,TAU);ctx.fill();ctx.restore();
+  }
+  get dead(){return this.age>this.life}
+}
+
+// 第一层：制作花瓣。只关心单片花瓣的曲线、厚度、脉络、卷边和透明度。
+class PetalShape{
+  constructor({layer='outer',palette,seed=0}){this.layer=layer;this.palette=palette;this.seed=seed;}
+  draw(ctx,{length,width,open,alpha,wind,vein=true}){
+    const curl=(1-open)*0.34 + wind.strength*0.18;
+    const bend=wind.x*7;
+    const colorA=this.layer==='inner'?this.palette[0]:this.palette[1];
+    const colorB=this.layer==='inner'?this.palette[1]:this.palette[0];
+    ctx.save();
+    ctx.scale(lerp(.24,1,open),lerp(.18,1,open));
+    ctx.rotate(wind.x*.035);
+    const g=ctx.createLinearGradient(0,-length,0,length*.24);
+    g.addColorStop(0,`rgba(255,255,255,${alpha*.82})`);
+    g.addColorStop(.28,hex(colorA,alpha));
+    g.addColorStop(1,hex(colorB,alpha*.86));
+    ctx.fillStyle=g;
+    ctx.shadowColor=hex(this.palette[5],this.layer==='inner'?.36:.24);
+    ctx.shadowBlur=this.layer==='inner'?16:12;
+    ctx.beginPath();
+    ctx.moveTo(0,-length);
+    ctx.bezierCurveTo(width*(1.18+curl),-length*.72,bend+width*(1.05+curl*.3),-length*.12,bend*.3,length*.18);
+    ctx.bezierCurveTo(bend-width*(1.05+curl*.3),-length*.12,-width*(1.18+curl),-length*.72,0,-length);
+    ctx.fill();
+    ctx.strokeStyle=`rgba(255,255,255,${this.layer==='inner'?.18:.11})`;
+    ctx.lineWidth=1;
+    ctx.stroke();
+    if(vein){
+      ctx.strokeStyle=`rgba(255,255,255,${this.layer==='inner'?.22:.13})`;
+      ctx.beginPath();
+      ctx.moveTo(0,-length*.82);
+      ctx.bezierCurveTo(width*.2,-length*.45,bend*.2,-length*.1,0,length*.08);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
+// 第二层：制作花瓣排列结构。只关心花瓣数量、角度、层级、错位和先后顺序。
+class PetalLayout{
+  constructor({count,layer,offset=0,radius=30,length=44,width=18}){
+    this.count=count;this.layer=layer;this.offset=offset;this.radius=radius;this.length=length;this.width=width;
+  }
+  draw(ctx,{palette,scale,open,t,flowerX,flowerY,seed}){
+    const shape=new PetalShape({layer:this.layer,palette,seed});
+    for(let i=0;i<this.count;i++){
+      const delay=i/this.count*.20;
+      const local=easeOutBack(clamp((open-delay)/(1-delay)));
+      if(local<=0)return;
+      const angle=i/this.count*TAU+this.offset;
+      const worldX=flowerX+Math.cos(angle)*this.radius*scale;
+      const worldY=flowerY+Math.sin(angle)*this.radius*scale;
+      const w=windField.sample(worldX,worldY,t);
+      const idle=open>.98?Math.sin(t*.0016+i+seed)*0.024:0;
+      const closeAngle=lerp(-1.10,.02,local);
+      ctx.save();
+      ctx.rotate(angle+idle+w.x*.055);
+      ctx.translate(0,-this.radius*scale*local);
+      ctx.rotate(closeAngle+w.y*.035);
+      shape.draw(ctx,{length:this.length*scale,width:this.width*scale,open:local,alpha:this.layer==='inner'?.94:.76,wind:w});
+      ctx.restore();
+    }
+  }
+}
+
+// 第三层：模拟开花。只管理茎、叶、花苞、花瓣、花心随时间的展开。
+class BloomSimulation{
+  constructor(x,y){
+    this.x=x;this.y=y;this.birth=performance.now();this.duration=rand(3200,4600);
+    this.scale=rand(.72,1.2)*Math.min(1.2,Math.max(.72,H/900));
+    this.palette=palettes[Math.floor(Math.random()*palettes.length)];
+    this.height=rand(110,190)*this.scale;this.bend=rand(-28,28)*this.scale;this.seed=Math.random()*1000;this.done=false;
+    this.innerLayout=new PetalLayout({count:7,layer:'inner',offset:Math.PI/7,radius:20,length:32,width:14});
+    this.outerLayout=new PetalLayout({count:Math.floor(rand(11,15)),layer:'outer',offset:-Math.PI/14,radius:31,length:47,width:18});
+  }
+  progress(now){return clamp((now-this.birth)/(this.duration*(slow?2.15:1)))}
+  head(now,p=this.progress(now)){
+    const grow=easeOutCubic(phase(p,.02,.28));
+    const w=windField.sample(this.x,this.y-this.height*.5,now);
+    const sway=w.x*18*this.scale*phase(p,.28,1)+Math.sin(now*.0013+this.seed)*4*this.scale*phase(p,.75,1);
+    return {x:this.x+this.bend*.38*grow+sway,y:this.y-this.height*grow};
+  }
+  update(now){
+    const p=this.progress(now);
+    if(!this.done&&p>.82){
+      this.done=true;
+      const h=this.head(now,p);
+      for(let i=0;i<rand(22,40)*this.scale;i++)particles.push(new Particle(h.x,h.y,this.palette,this.scale));
+    }
+  }
+  draw(ctx,now){
+    const p=this.progress(now);
+    const stem=easeOutCubic(phase(p,.02,.28));
+    const leaf=easeOutBack(phase(p,.16,.43));
+    const bud=easeOutCubic(phase(p,.30,.56));
+    const inner=easeOutBack(phase(p,.44,.76));
+    const outer=easeOutBack(phase(p,.58,.96));
+    const h=this.head(now,p);
+    this.drawGroundGlow(ctx,p);
+    this.drawStem(ctx,stem,now);
+    this.drawLeaves(ctx,leaf,now);
+    ctx.save();
+    ctx.translate(h.x,h.y);
+    const w=windField.sample(h.x,h.y,now);
+    ctx.rotate(w.x*.10*phase(p,.55,1));
+    ctx.scale(1+Math.sin(now*.0022+this.seed)*.016*phase(p,.95,1),1+Math.sin(now*.002+this.seed)*.012*phase(p,.95,1));
+    this.drawBud(ctx,bud,p);
+    this.outerLayout.draw(ctx,{palette:this.palette,scale:this.scale,open:outer,t:now,flowerX:h.x,flowerY:h.y,seed:this.seed});
+    this.innerLayout.draw(ctx,{palette:this.palette,scale:this.scale,open:inner,t:now,flowerX:h.x,flowerY:h.y,seed:this.seed});
+    this.drawCenter(ctx,p,now);
+    ctx.restore();
+  }
+  drawGroundGlow(ctx,p){
+    const gp=easeOutCubic(phase(p,0,.24)),fade=1-phase(p,.42,.9)*.45,r=lerp(8,44*this.scale,gp);
+    ctx.save();ctx.globalCompositeOperation='lighter';
+    const g=ctx.createRadialGradient(this.x,this.y,0,this.x,this.y,r);
+    g.addColorStop(0,hex(this.palette[5],.42*fade));g.addColorStop(1,hex(this.palette[5],0));
+    ctx.fillStyle=g;ctx.beginPath();ctx.ellipse(this.x,this.y+4,r*1.15,r*.32,0,0,TAU);ctx.fill();ctx.restore();
+  }
+  drawStem(ctx,t,now){
+    if(t<=0)return;
+    const h=this.head(now,t),w=windField.sample(this.x,this.y-this.height*.5,now);
+    ctx.save();ctx.lineCap='round';ctx.lineWidth=Math.max(2,4.8*this.scale);
+    const g=ctx.createLinearGradient(this.x,this.y,h.x,h.y);
+    g.addColorStop(0,hex(this.palette[3],.25));g.addColorStop(.45,hex(this.palette[3],.78));g.addColorStop(1,hex(this.palette[3],.95));
+    ctx.strokeStyle=g;ctx.shadowColor=hex(this.palette[3],.45);ctx.shadowBlur=8;
+    ctx.beginPath();ctx.moveTo(this.x,this.y);
+    ctx.bezierCurveTo(this.x+this.bend*.1+w.x*8,this.y-this.height*.36*t,this.x+this.bend*.55+w.x*18,this.y-this.height*.72*t,h.x,h.y);
+    ctx.stroke();ctx.restore();
+  }
+  drawLeaves(ctx,t,now){
+    if(t<=0)return;
+    [[-1,.54,34,-.7],[1,.68,27,.66]].forEach(l=>{
+      const [side,yr,size,tilt]=l,bx=this.x+this.bend*yr*.32,by=this.y-this.height*yr,s=size*this.scale*t,w=windField.sample(bx,by,now);
+      ctx.save();ctx.translate(bx,by);ctx.rotate((tilt+w.x*.26+Math.sin(now*.0014+this.seed+side)*.06*t)*side);ctx.scale(side,1);
+      ctx.fillStyle=hex(this.palette[4],.78);ctx.shadowColor=hex(this.palette[4],.25);ctx.shadowBlur=9;
+      ctx.beginPath();ctx.moveTo(0,0);ctx.bezierCurveTo(s*.45,-s*.45,s*1.24,-s*.25,s*1.55,0);ctx.bezierCurveTo(s*1.05,s*.33,s*.42,s*.45,0,0);ctx.fill();
+      ctx.strokeStyle='rgba(255,255,255,.16)';ctx.beginPath();ctx.moveTo(3,0);ctx.quadraticCurveTo(s*.72,-s*.09,s*1.34,0);ctx.stroke();ctx.restore();
+    });
+  }
+  drawBud(ctx,t,p){
+    if(t<=0||p>.78)return;
+    const fade=1-phase(p,.62,.84),r=lerp(4,18*this.scale,t);
+    ctx.save();ctx.globalAlpha=fade;
+    const g=ctx.createRadialGradient(0,-r*.2,0,0,0,r*1.5);
+    g.addColorStop(0,hex(this.palette[0],.95));g.addColorStop(.6,hex(this.palette[1],.82));g.addColorStop(1,hex(this.palette[1],.18));
+    ctx.fillStyle=g;ctx.shadowColor=hex(this.palette[5],.42);ctx.shadowBlur=18;ctx.beginPath();ctx.ellipse(0,0,r*.82,r*1.18,0,0,TAU);ctx.fill();ctx.restore();
+  }
+  drawCenter(ctx,p,now){
+    const t=easeOutCubic(phase(p,.72,1));if(t<=0)return;
+    const r=lerp(2,10*this.scale,t),pulse=1+Math.sin(now*.004+this.seed)*.04*t;
+    ctx.save();ctx.globalCompositeOperation='lighter';
+    const g=ctx.createRadialGradient(0,0,0,0,0,r*3.8*pulse);
+    g.addColorStop(0,'rgba(255,255,255,.9)');g.addColorStop(.22,hex(this.palette[2],.95));g.addColorStop(.75,hex(this.palette[5],.18));g.addColorStop(1,hex(this.palette[5],0));
+    ctx.fillStyle=g;ctx.beginPath();ctx.arc(0,0,r*3.8*pulse,0,TAU);ctx.fill();
+    ctx.globalCompositeOperation='source-over';ctx.fillStyle=hex(this.palette[2],.96);ctx.beginPath();ctx.arc(0,0,r,0,TAU);ctx.fill();ctx.restore();
+  }
+}
+
+class Flower{
+  constructor(x,y){this.bloom=new BloomSimulation(x,y)}
+  update(now){this.bloom.update(now)}
+  draw(now){this.bloom.draw(ctx,now)}
+  get y(){return this.bloom.y}
+}
+
+function spawn(x,y,force=false){
+  const now=performance.now(),gap=Math.max(38,Math.min(W,H)*.038);
+  const recent=flowers[flowers.length-1];
+  if(!force&&recent&&dist({x,y},{x:recent.bloom.x,y:recent.bloom.y})<gap&&now-recent.bloom.birth<120)return;
+  y=Math.min(H-34,Math.max(120,y));
+  flowers.push(new Flower(x,y));
+  if(flowers.length>90)flowers.shift();
+  countEl.textContent=flowers.length+' flowers';
+}
+
+function bg(now){
+  const g=ctx.createRadialGradient(W*.5,H*.45,0,W*.5,H*.45,Math.max(W,H)*.8);
+  g.addColorStop(0,'#172348');g.addColorStop(.35,'#0b1028');g.addColorStop(1,'#050713');ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+  ctx.save();ctx.globalCompositeOperation='lighter';
+  const fy=H*.78,gg=ctx.createRadialGradient(W/2,fy,0,W/2,fy,Math.min(W,H)*.64);
+  gg.addColorStop(0,'rgba(127,203,255,.08)');gg.addColorStop(.46,'rgba(189,136,255,.045)');gg.addColorStop(1,'rgba(127,203,255,0)');
+  ctx.fillStyle=gg;ctx.beginPath();ctx.ellipse(W/2,fy,W*.46,H*.18,0,0,TAU);ctx.fill();ctx.restore();
+  for(const s of stars){s.y+=s.v;s.x+=Math.sin(now*.00025+s.p)*.018;if(s.y<-10){s.y=H+10;s.x=Math.random()*W}ctx.fillStyle=`rgba(205,230,255,${s.a+Math.sin(now*.001+s.p)*.035})`;ctx.beginPath();ctx.arc(s.x,s.y,s.r,0,TAU);ctx.fill()}
+}
+
+function pointerDraw(now){
+  trail=trail.filter(p=>now-p.t<650);if(pointer.show)trail.push({x:pointer.x,y:pointer.y,t:now});
+  ctx.save();ctx.globalCompositeOperation='lighter';
+  for(const p of trail){const age=(now-p.t)/650,r=lerp(14,2,age),a=(1-age)*.18,g=ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,r*2.6);g.addColorStop(0,`rgba(190,230,255,${a})`);g.addColorStop(1,'rgba(190,230,255,0)');ctx.fillStyle=g;ctx.beginPath();ctx.arc(p.x,p.y,r*2.6,0,TAU);ctx.fill()}
+  if(pointer.show){const r=pointer.down?18:13,g=ctx.createRadialGradient(pointer.x,pointer.y,0,pointer.x,pointer.y,r*2.2);g.addColorStop(0,'rgba(255,255,255,.72)');g.addColorStop(.2,'rgba(185,230,255,.4)');g.addColorStop(1,'rgba(185,230,255,0)');ctx.fillStyle=g;ctx.beginPath();ctx.arc(pointer.x,pointer.y,r*2.2,0,TAU);ctx.fill()}
+  ctx.restore();
+}
+
+function handDraw(now){
+  if(!hand.show||now-hand.lastSeen>900)return;
+  ctx.save();ctx.globalCompositeOperation='lighter';
+  const pulse=1+Math.sin(now*.01)*.06,base=hand.isFist?50:34,r=base*pulse,color=hand.isFist?'255,190,230':'150,225,255';
+  const g=ctx.createRadialGradient(hand.x,hand.y,0,hand.x,hand.y,r*1.5);
+  g.addColorStop(0,`rgba(${color},${hand.isFist?.42:.24})`);g.addColorStop(.35,`rgba(${color},${hand.isFist?.18:.09})`);g.addColorStop(1,`rgba(${color},0)`);
+  ctx.fillStyle=g;ctx.beginPath();ctx.arc(hand.x,hand.y,r*1.5,0,TAU);ctx.fill();
+  ctx.strokeStyle=`rgba(${color},${hand.isFist?.92:.45})`;ctx.lineWidth=hand.isFist?3:2;ctx.beginPath();ctx.arc(hand.x,hand.y,r*.52,0,TAU);ctx.stroke();
+  ctx.strokeStyle=`rgba(255,255,255,${hand.isFist?.7:.2})`;ctx.lineWidth=1;ctx.beginPath();ctx.arc(hand.x,hand.y,r*.82,-Math.PI/2,-Math.PI/2+TAU*hand.score);ctx.stroke();ctx.restore();
+}
+
+function loop(now){
+  const dt=Math.min(.033,(now-lastFrame)/1000)*(slow?.55:1);lastFrame=now;
+  bg(now);windField.draw(ctx,now);
+  flowers.sort((a,b)=>a.y-b.y);for(const f of flowers){f.update(now);f.draw(now)}
+  for(const p of particles)p.update(dt,now);particles=particles.filter(p=>!p.dead).slice(-560);for(const p of particles)p.draw();
+  handDraw(now);if(mouseDebug)pointerDraw(now);requestAnimationFrame(loop);
+}
+
+function lmDist(a,b){return Math.hypot(a.x-b.x,a.y-b.y)}
+function detectFist(lm){
+  const palm={x:(lm[0].x+lm[5].x+lm[9].x+lm[13].x+lm[17].x)/5,y:(lm[0].y+lm[5].y+lm[9].y+lm[13].y+lm[17].y)/5,z:0};
+  const palmSize=(lmDist(lm[0],lm[5])+lmDist(lm[0],lm[9])+lmDist(lm[0],lm[13])+lmDist(lm[0],lm[17]))/4||.001;
+  const ratios=[8,12,16,20].map(i=>lmDist(lm[i],palm)/palmSize);
+  const avg=ratios.reduce((a,b)=>a+b,0)/ratios.length;
+  const closed=ratios.filter(r=>r<1.72).length;
+  const thumbRatio=lmDist(lm[4],palm)/palmSize;
+  const thumbFolded=thumbRatio<1.86;
+  const score=clamp((2.35-avg)/.95);
+  let isFist=hand.isFist;
+  if(!isFist&&closed>=3&&avg<1.78&&thumbFolded)isFist=true;
+  if(isFist&&(closed<=2||avg>2.08))isFist=false;
+  return{palm,avg,closed,thumbFolded,score,isFist};
+}
+function onHandResults(results){
+  const now=performance.now();
+  if(!results.multiHandLandmarks||!results.multiHandLandmarks.length){hand.show=false;handDot.className='dot';handStatus.textContent=cameraStarted?'未检测到手':'请点击“启动摄像头”';return}
+  const lm=results.multiHandLandmarks[0];
+  const state=detectFist(lm);
+  const x=(1-state.palm.x)*W,y=state.palm.y*H;
+  const wasFist=hand.isFist;
+  hand.x=lerp(hand.x||x,x,.55);hand.y=lerp(hand.y||y,y,.55);hand.show=true;hand.lastSeen=now;hand.score=state.score;hand.isFist=state.isFist;
+  if(state.isFist&&!wasFist&&now-hand.lastBloom>850){
+    spawn(hand.x,hand.y,true);hand.lastBloom=now;
+    for(let i=0;i<22;i++)particles.push(new Particle(hand.x,hand.y,palettes[Math.floor(Math.random()*palettes.length)],1.05));
+  }
+  handDot.className='dot '+(state.isFist?'fist':'ok');
+  handStatus.textContent=state.isFist?'已攥拳：触发开花':'检测到手：经过不会开花，攥拳才开花';
+}
+async function startCamera(){
+  if(cameraStarted)return;
+  try{
+    if(!window.Hands||!window.Camera){handStatus.textContent='手势库加载中，请稍后再试';return}
+    handStatus.textContent='正在请求摄像头权限...';
+    hands=new Hands({locateFile:file=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+    hands.setOptions({maxNumHands:1,modelComplexity:1,minDetectionConfidence:.66,minTrackingConfidence:.62});
+    hands.onResults(onHandResults);
+    cam=new Camera(video,{onFrame:async()=>{await hands.send({image:video})},width:1280,height:720});
+    await cam.start();
+    cameraStarted=true;cameraBtn.textContent='摄像头已启动';cameraBtn.classList.add('on');handDot.className='dot ok';handStatus.textContent='摄像头已启动，请把手放入画面';
+  }catch(err){console.error(err);handDot.className='dot';handStatus.textContent='摄像头启动失败：请检查浏览器权限或用 HTTPS/localhost 打开'}
+}
+
+function pt(e){return e.touches&&e.touches[0]?{x:e.touches[0].clientX,y:e.touches[0].clientY}:{x:e.clientX,y:e.clientY}}
+function move(e){if(!mouseDebug)return;const p=pt(e);pointer.x=p.x;pointer.y=p.y;pointer.show=true}
+function down(e){if(!mouseDebug)return;const p=pt(e);pointer.x=p.x;pointer.y=p.y;pointer.down=true;pointer.show=true;spawn(p.x,p.y,true)}
+function up(){pointer.down=false}
+function reset(){flowers=[];particles=[];trail=[];countEl.textContent='0 flowers'}
+function toggleHelp(){help=!help;panel.classList.toggle('hide',!help);tip.classList.toggle('hide',!help);helpBtn.classList.toggle('on',help)}
+function toggleSlow(){slow=!slow;slowBtn.classList.toggle('on',slow)}
+function toggleMouse(){mouseDebug=!mouseDebug;mouseBtn.classList.toggle('on',mouseDebug);pointer.show=false;handStatus.textContent=mouseDebug?'鼠标调试已开：点击可临时开花':'摄像头模式：经过不会开花，攥拳才开花'}
+function toggleWind(){windDebug=!windDebug;windBtn.classList.toggle('on',windDebug)}
+
+addEventListener('resize',resize);
+canvas.addEventListener('mousemove',move);canvas.addEventListener('mousedown',down);addEventListener('mouseup',up);
+canvas.addEventListener('mouseleave',()=>{pointer.show=false;pointer.down=false});
+canvas.addEventListener('touchstart',e=>{e.preventDefault();down(e)},{passive:false});
+canvas.addEventListener('touchmove',e=>{e.preventDefault();move(e)},{passive:false});
+canvas.addEventListener('touchend',e=>{e.preventDefault();up()},{passive:false});
+cameraBtn.onclick=startCamera;document.getElementById('reset').onclick=reset;slowBtn.onclick=toggleSlow;mouseBtn.onclick=toggleMouse;windBtn.onclick=toggleWind;helpBtn.onclick=toggleHelp;
+addEventListener('keydown',e=>{const k=e.key.toLowerCase();if(k==='r')reset();if(k==='s')toggleSlow();if(k==='h')toggleHelp();if(k==='m')toggleMouse();if(k==='w')toggleWind()});
+
+resize();
+setTimeout(()=>{spawn(W*.45,H*.80,true);setTimeout(()=>spawn(W*.55,H*.78,true),560)},420);
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
