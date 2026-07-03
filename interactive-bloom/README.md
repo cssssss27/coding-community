@@ -17,7 +17,7 @@
 
 直接打开 `interactive-bloom/index.html`，点击“启动摄像头”，允许浏览器访问摄像头。
 
-推荐通过 HTTPS 或 localhost 访问。若直接双击本地文件时摄像头权限异常，请使用本地服务器，例如：
+推荐通过 HTTPS 或 localhost 访问。若直接双击本地文件时摄像头权限异常，请在仓库根目录使用本地服务器，例如：
 
 ```bash
 python -m http.server 8080
@@ -27,6 +27,12 @@ python -m http.server 8080
 
 ```text
 http://localhost:8080/interactive-bloom/
+```
+
+如果只下载了 `interactive-bloom` 文件夹并在该文件夹内启动本地服务器，则访问：
+
+```text
+http://localhost:8080/
 ```
 
 ## 技术说明
