@@ -37,7 +37,7 @@ http://localhost:8080/
 
 ## 技术说明
 
-本版本使用 HTML5 Canvas 绘制开花动画，使用 MediaPipe Hands 识别手部关键点。
+本版本使用 HTML5 Canvas 绘制开花动画，使用 MediaPipe Hands 识别手部关键点。页面需要浏览器摄像头权限，且首次启动需要联网加载手势识别库。
 
 判断逻辑不是“手经过就开花”，而是：
 
